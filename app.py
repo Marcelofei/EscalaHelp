@@ -66,7 +66,6 @@ st.markdown(
 # ==========================================
 @st.cache_resource(ttl=3600)
 def get_db_connection():
-    # Extração primária do ambiente Hugging Face (os.environ), com fallback para st.secrets local
     db_url = os.environ.get("DATABASE_URL")
     if not db_url:
         try:
@@ -78,7 +77,6 @@ def get_db_connection():
         st.error("DATABASE_URL ausente nas configurações (Secrets/Environment).")
         st.stop()
 
-    # Timeout forçado para impedir congelamento de máquina virtual
     conn = psycopg2.connect(
         db_url,
         options="-c client_encoding=utf8",
@@ -121,10 +119,10 @@ def init_db():
     CREATE TABLE IF NOT EXISTS doctors (name TEXT PRIMARY KEY);
     CREATE TABLE IF NOT EXISTS shift_schedule (shift_date DATE, shift_time VARCHAR(10), doctor_name TEXT, PRIMARY KEY(shift_date, shift_time));
     CREATE TABLE IF NOT EXISTS fixed_schedule_4w (week_num INT, weekday INT, shift_time VARCHAR(10), doctor_name TEXT, PRIMARY KEY(week_num, weekday, shift_time));
+    CREATE TABLE IF NOT EXISTS shift_schedule_tc (shift_date DATE, shift_time VARCHAR(10), doctor_name TEXT, PRIMARY KEY(shift_date, shift_time));
     """
     execute_query(query)
 
-# TENTATIVA DE INICIALIZAÇÃO BLINDADA (EVITA O TRAVAMENTO SILENCIOSO DA MÁQUINA VIRTUAL)
 try:
     init_db()
 except Exception as e:
@@ -186,17 +184,18 @@ with st.sidebar:
     st.subheader("⚠️ Contingência")
     df_backup = fetch_data("SELECT * FROM shift_schedule;")
     if not df_backup.empty:
-        st.download_button("Exportar Escala (CSV)", data=df_backup.to_csv(index=False).encode('utf-8'), file_name="backup_escalas.csv", mime="text/csv", use_container_width=True)
+        st.download_button("Exportar Geral (CSV)", data=df_backup.to_csv(index=False).encode('utf-8'), file_name="backup_geral.csv", mime="text/csv", use_container_width=True)
 
 # ==========================================
 # 4. ABAS E INTERFACE
 # ==========================================
 st.title("🏥 Gestão de Escala de Radiologia")
 
-tab_escala, tab_padrao = st.tabs(["📅 Escala Mensal", "⚙️ Padrão Rotativo (4 Semanas)"])
+# ADICIONADO: Nova aba TC Eletiva na estrutura
+tab_escala, tab_tc, tab_padrao = st.tabs(["📅 Escala Mensal", "🖥️ Escala TC Eletiva", "⚙️ Padrão Rotativo (4 Semanas)"])
 
 # ---------------------------------------------------------
-# ABA 2: PADRÃO ROTATIVO (4 Semanas)
+# ABA 3: PADRÃO ROTATIVO (4 Semanas)
 # ---------------------------------------------------------
 with tab_padrao:
     c_info, c_vazio, c_btn_padrao = st.columns([4, 1, 2])
@@ -239,16 +238,14 @@ with tab_padrao:
     st.session_state['edits_padrao'] = all_fix_edits
 
 # ---------------------------------------------------------
-# ABA 1: ESCALA DO MÊS E AUTO-PREENCHIMENTO
+# ABA 1: ESCALA DO MÊS GERAL
 # ---------------------------------------------------------
 with tab_escala:
     meses = ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"]
-    
     col_m, col_a, col_space, col_reset = st.columns([2, 1.5, 3, 2.5])
     
     with col_m: mes_nome = st.selectbox("Mês de Referência", meses, index=datetime.date.today().month - 1)
     with col_a: ano = st.selectbox("Ano", [2026])
-    
     mes_num = meses.index(mes_nome) + 1
     
     with col_reset:
@@ -314,9 +311,6 @@ with tab_escala:
         ed = st.data_editor(df_to_edit, column_config=headers_final, use_container_width=True, key=f"ed_m_{i}", hide_index=True)
         all_edits.append((week, ed))
 
-    # ==========================================
-    # 5. CÁLCULO FINANCEIRO E GERADOR DE PDF
-    # ==========================================
     st.divider()
     df_fin = df_raw[df_raw['doctor_name'].isin(df_docs['name'])].copy()
     if not df_fin.empty:
@@ -328,35 +322,20 @@ with tab_escala:
     def generate_pdf_semanal(weeks, pivot, resumo, mes, ano):
         pdf = FPDF(orientation='L', unit='mm', format='A4')
         pdf.add_page()
-        
         total_semanas = len(weeks)
-        
-        # ESCALA DINÂMICA DE ELEMENTOS (ANTI-BREAK)
-        if total_semanas <= 4:
-            font_tit = 18; font_tab = 9; h_row = 7; margin_w = 5
-        elif total_semanas == 5:
-            font_tit = 16; font_tab = 8; h_row = 6; margin_w = 3
-        else:
-            font_tit = 14; font_tab = 7; h_row = 4.5; margin_w = 2
+        if total_semanas <= 4: font_tit = 18; font_tab = 9; h_row = 7; margin_w = 5
+        elif total_semanas == 5: font_tit = 16; font_tab = 8; h_row = 6; margin_w = 3
+        else: font_tit = 14; font_tab = 7; h_row = 4.5; margin_w = 2
 
-        pdf.set_font("Arial", 'B', font_tit)
-        pdf.set_text_color(0, 45, 98)
-        pdf.cell(0, 10, f"HOSPITAL HELP - ESCALA RADIOLOGIA - {mes.upper()} / {ano}", ln=True, align='C')
-        pdf.ln(2)
+        pdf.set_font("Arial", 'B', font_tit); pdf.set_text_color(0, 45, 98)
+        pdf.cell(0, 10, f"HOSPITAL HELP - ESCALA RADIOLOGIA - {mes.upper()} / {ano}", ln=True, align='C'); pdf.ln(2)
 
         headers = ["Seg", "Ter", "Qua", "Qui", "Sex", "Sab", "Dom"]
-        col_w_label = 25 
-        col_w_day = (pdf.w - (pdf.l_margin + pdf.r_margin) - col_w_label) / 7
+        col_w_label = 25; col_w_day = (pdf.w - (pdf.l_margin + pdf.r_margin) - col_w_label) / 7
 
         for i, week in enumerate(weeks):
-            pdf.set_font("Arial", 'B', font_tab + 1)
-            pdf.set_text_color(0, 45, 98)
-            pdf.cell(0, h_row, f"SEMANA {i+1}", ln=True)
-            
-            pdf.set_font("Arial", 'B', font_tab)
-            pdf.set_fill_color(0, 45, 98) 
-            pdf.set_text_color(255, 255, 255) 
-            
+            pdf.set_font("Arial", 'B', font_tab + 1); pdf.set_text_color(0, 45, 98); pdf.cell(0, h_row, f"SEMANA {i+1}", ln=True)
+            pdf.set_font("Arial", 'B', font_tab); pdf.set_fill_color(0, 45, 98); pdf.set_text_color(255, 255, 255) 
             pdf.cell(col_w_label, h_row, "Turno", 1, 0, 'C', True)
             for idx, day in enumerate(week):
                 txt = f"{headers[idx]} {day:02d}" if day > 0 else headers[idx]
@@ -364,45 +343,27 @@ with tab_escala:
             pdf.ln()
 
             for shift in ['Manhã', 'Tarde', 'Noite']:
-                pdf.set_font("Arial", 'B', font_tab)
-                pdf.set_fill_color(240, 240, 240) 
-                pdf.set_text_color(0, 45, 98)
-                shift_label = shift.replace('ã', 'a') 
-                pdf.cell(col_w_label, h_row, shift_label, 1, 0, 'C', True)
-                
-                pdf.set_font("Arial", '', font_tab)
-                pdf.set_text_color(0, 0, 0) 
-                
+                pdf.set_font("Arial", 'B', font_tab); pdf.set_fill_color(240, 240, 240); pdf.set_text_color(0, 45, 98)
+                shift_label = shift.replace('ã', 'a'); pdf.cell(col_w_label, h_row, shift_label, 1, 0, 'C', True)
+                pdf.set_font("Arial", '', font_tab); pdf.set_text_color(0, 0, 0) 
                 char_limit = 18 if font_tab >= 9 else (22 if font_tab == 8 else 25)
 
                 for day in week:
-                    if day == 0:
-                        pdf.cell(col_w_day, h_row, "-", 1, 0, 'C')
+                    if day == 0: pdf.cell(col_w_day, h_row, "-", 1, 0, 'C')
                     else:
                         nome = str(pivot.at[shift, day]) if day in pivot.columns else ""
                         pdf.cell(col_w_day, h_row, nome[:char_limit], 1, 0, 'C')
                 pdf.ln()
-            
             pdf.ln(margin_w)
 
-        # FECHAMENTO FINANCEIRO - RH (PÁGINA ISOLADA)
-        pdf.add_page()
-        pdf.set_font("Arial", 'B', 14); pdf.set_text_color(0, 45, 98)
-        pdf.cell(0, 10, "FECHAMENTO FINANCEIRO - RH", ln=True, align='L')
-        pdf.ln(5)
-        
+        pdf.add_page(); pdf.set_font("Arial", 'B', 14); pdf.set_text_color(0, 45, 98)
+        pdf.cell(0, 10, "FECHAMENTO FINANCEIRO - RH", ln=True, align='L'); pdf.ln(5)
         pdf.set_font("Arial", 'B', 10); pdf.set_fill_color(0, 45, 98); pdf.set_text_color(255, 255, 255)
-        pdf.cell(140, 8, "Medico", 1, 0, 'C', True)
-        pdf.cell(50, 8, "Total (R$)", 1, 1, 'C', True)
-        
-        pdf.set_font("Arial", '', 10); pdf.set_text_color(0, 0, 0)
-        total_geral = 0
+        pdf.cell(140, 8, "Medico", 1, 0, 'C', True); pdf.cell(50, 8, "Total (R$)", 1, 1, 'C', True)
+        pdf.set_font("Arial", '', 10); pdf.set_text_color(0, 0, 0); total_geral = 0
         for _, r in resumo.iterrows():
-            pdf.cell(140, 8, str(r['doctor_name']), 1)
-            valor = float(r['Total'])
-            total_geral += valor
-            valor_fmt = f"{valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-            pdf.cell(50, 8, valor_fmt, 1, 1, 'R')
+            pdf.cell(140, 8, str(r['doctor_name']), 1); valor = float(r['Total']); total_geral += valor
+            valor_fmt = f"{valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."); pdf.cell(50, 8, valor_fmt, 1, 1, 'R')
             
         pdf.set_font("Arial", 'B', 10); pdf.set_fill_color(240, 240, 240); pdf.set_text_color(0, 45, 98)
         pdf.cell(140, 8, "TOTAL GERAL", 1, 0, 'R', True)
@@ -411,17 +372,12 @@ with tab_escala:
 
         return bytes(pdf.output(dest='S'))
 
-    # ==========================================
-    # 6. AÇÕES FINAIS (SAVE & PDF)
-    # ==========================================
-    st.divider()
     c_save, c_pdf = st.columns(2)
     
     with c_save:
         if st.button("💾 SALVAR ESCALA GERAL", type="primary", use_container_width=True):
             batch = []
             shifts = ['Manhã', 'Tarde', 'Noite']
-            
             for week_idx, (w_days, ed) in enumerate(all_edits):
                 for idx, day in enumerate(w_days):
                     if day > 0:
@@ -431,26 +387,122 @@ with tab_escala:
                             doc_name = ed.at[row_idx, col_name]
                             batch.append((dt, shift, doc_name))
             
-            execute_query(
-                """
-                INSERT INTO shift_schedule (shift_date, shift_time, doctor_name) 
-                VALUES %s 
-                ON CONFLICT (shift_date, shift_time) 
-                DO UPDATE SET doctor_name = EXCLUDED.doctor_name;
-                """, 
-                batch
-            )
-            st.cache_data.clear()
-            st.success("Escala salva!")
-            st.rerun()
+            execute_query("""INSERT INTO shift_schedule (shift_date, shift_time, doctor_name) VALUES %s ON CONFLICT (shift_date, shift_time) DO UPDATE SET doctor_name = EXCLUDED.doctor_name;""", batch)
+            st.cache_data.clear(); st.success("Escala salva!"); st.rerun()
 
     with c_pdf:
         if not df_pivot.empty:
             pdf_bytes = generate_pdf_semanal(weeks, df_pivot, resumo_rh, mes_nome, ano)
-            st.download_button(
-                label="📄 BAIXAR RELATÓRIO PDF", 
-                data=pdf_bytes, 
-                file_name=f"Escala_{mes_nome}_{ano}.pdf", 
-                mime="application/pdf", 
-                use_container_width=True
-            )
+            st.download_button(label="📄 BAIXAR RELATÓRIO PDF", data=pdf_bytes, file_name=f"Escala_{mes_nome}_{ano}.pdf", mime="application/pdf", use_container_width=True)
+
+# ---------------------------------------------------------
+# ABA 2: ESCALA TC ELETIVA (SEM FINANCEIRO)
+# ---------------------------------------------------------
+with tab_tc:
+    col_m_tc, col_a_tc, col_space_tc = st.columns([2, 1.5, 5.5])
+    
+    with col_m_tc: mes_nome_tc = st.selectbox("Mês de Referência", meses, index=datetime.date.today().month - 1, key="sel_mes_tc")
+    with col_a_tc: ano_tc = st.selectbox("Ano", [2026], key="sel_ano_tc")
+    mes_num_tc = meses.index(mes_nome_tc) + 1
+    
+    df_raw_tc = fetch_data("SELECT shift_date, shift_time, doctor_name FROM shift_schedule_tc WHERE EXTRACT(YEAR FROM shift_date) = %s AND EXTRACT(MONTH FROM shift_date) = %s", (ano_tc, mes_num_tc))
+
+    if not df_raw_tc.empty:
+        df_raw_tc['dia'] = pd.to_datetime(df_raw_tc['shift_date']).dt.day
+        df_pivot_tc = df_raw_tc.pivot(index='shift_time', columns='dia', values='doctor_name').reindex(['Manhã', 'Tarde', 'Noite']).fillna("")
+    else: 
+        df_pivot_tc = pd.DataFrame(index=['Manhã', 'Tarde', 'Noite'])
+
+    if medico_alvo != "":
+        st.subheader(f"📍 Módulo WhatsApp: Plantões de {medico_alvo} (TC Eletiva)")
+        def style_highlight_tc(val):
+            return 'background-color: #00AEEF; color: #FFFFFF; font-weight: bold; border: 1px solid black;' if val == medico_alvo else 'background-color: #FFFFFF; color: #000000;'
+        st.dataframe(df_pivot_tc.style.map(style_highlight_tc), use_container_width=True, hide_index=False)
+
+    st.divider()
+    st.subheader("📝 Edição da Escala TC Eletiva")
+    calendar.setfirstweekday(calendar.MONDAY)
+    weeks_tc = calendar.monthcalendar(ano_tc, mes_num_tc)
+    all_edits_tc = []
+
+    for i, week in enumerate(weeks_tc):
+        st.markdown(f"#### Semana {i+1}")
+        w_data_tc = {f"wtc{i}_d{idx}": (["", "", ""] if day == 0 else (df_pivot_tc[day].tolist() if day in df_pivot_tc.columns else ["","",""])) for idx, day in enumerate(week)}
+        for k in w_data_tc: w_data_tc[k] = ["" if x is None or x == "None" else x for x in w_data_tc[k]]
+        
+        df_w_raw_tc = pd.DataFrame(w_data_tc)
+        df_w_raw_tc.index = ['Manhã', 'Tarde', 'Noite']
+        
+        w_conf_tc = {f"wtc{i}_d{idx}": (st.column_config.TextColumn(week_headers[idx], disabled=True, width="small") if day == 0 else st.column_config.SelectboxColumn(f"{week_headers[idx]} {day:02d}", options=lista_medicos, width="small")) for idx, day in enumerate(week)}
+        
+        df_to_edit_tc = df_w_raw_tc.reset_index().rename(columns={'index': 'Turno'})
+        headers_final_tc = {'Turno': st.column_config.TextColumn("Turno", disabled=True, width="small")}
+        headers_final_tc.update(w_conf_tc)
+        
+        ed_tc = st.data_editor(df_to_edit_tc, column_config=headers_final_tc, use_container_width=True, key=f"ed_tc_w_{i}", hide_index=True)
+        all_edits_tc.append((week, ed_tc))
+
+    st.divider()
+    
+    # FUNÇÃO DE PDF EXCLUSIVA PARA TC ELETIVA (SEM FINANCEIRO)
+    def generate_pdf_tc(weeks, pivot, mes, ano):
+        pdf = FPDF(orientation='L', unit='mm', format='A4')
+        pdf.add_page()
+        total_semanas = len(weeks)
+        
+        if total_semanas <= 4: font_tit = 18; font_tab = 9; h_row = 7; margin_w = 5
+        elif total_semanas == 5: font_tit = 16; font_tab = 8; h_row = 6; margin_w = 3
+        else: font_tit = 14; font_tab = 7; h_row = 4.5; margin_w = 2
+
+        pdf.set_font("Arial", 'B', font_tit); pdf.set_text_color(0, 45, 98)
+        pdf.cell(0, 10, f"HOSPITAL HELP - ESCALA TC ELETIVA - {mes.upper()} / {ano}", ln=True, align='C'); pdf.ln(2)
+
+        headers = ["Seg", "Ter", "Qua", "Qui", "Sex", "Sab", "Dom"]
+        col_w_label = 25; col_w_day = (pdf.w - (pdf.l_margin + pdf.r_margin) - col_w_label) / 7
+
+        for i, week in enumerate(weeks):
+            pdf.set_font("Arial", 'B', font_tab + 1); pdf.set_text_color(0, 45, 98); pdf.cell(0, h_row, f"SEMANA {i+1}", ln=True)
+            pdf.set_font("Arial", 'B', font_tab); pdf.set_fill_color(0, 45, 98); pdf.set_text_color(255, 255, 255) 
+            pdf.cell(col_w_label, h_row, "Turno", 1, 0, 'C', True)
+            for idx, day in enumerate(week):
+                txt = f"{headers[idx]} {day:02d}" if day > 0 else headers[idx]
+                pdf.cell(col_w_day, h_row, txt, 1, 0, 'C', True)
+            pdf.ln()
+
+            for shift in ['Manhã', 'Tarde', 'Noite']:
+                pdf.set_font("Arial", 'B', font_tab); pdf.set_fill_color(240, 240, 240); pdf.set_text_color(0, 45, 98)
+                shift_label = shift.replace('ã', 'a'); pdf.cell(col_w_label, h_row, shift_label, 1, 0, 'C', True)
+                pdf.set_font("Arial", '', font_tab); pdf.set_text_color(0, 0, 0) 
+                char_limit = 18 if font_tab >= 9 else (22 if font_tab == 8 else 25)
+
+                for day in week:
+                    if day == 0: pdf.cell(col_w_day, h_row, "-", 1, 0, 'C')
+                    else:
+                        nome = str(pivot.at[shift, day]) if day in pivot.columns else ""
+                        pdf.cell(col_w_day, h_row, nome[:char_limit], 1, 0, 'C')
+                pdf.ln()
+            pdf.ln(margin_w)
+        return bytes(pdf.output(dest='S'))
+
+    c_save_tc, c_pdf_tc = st.columns(2)
+    
+    with c_save_tc:
+        if st.button("💾 SALVAR ESCALA TC ELETIVA", type="primary", use_container_width=True):
+            batch_tc = []
+            shifts = ['Manhã', 'Tarde', 'Noite']
+            for week_idx, (w_days, ed) in enumerate(all_edits_tc):
+                for idx, day in enumerate(w_days):
+                    if day > 0:
+                        dt = datetime.date(ano_tc, mes_num_tc, day)
+                        for row_idx, shift in enumerate(shifts):
+                            col_name = f"wtc{week_idx}_d{idx}"
+                            doc_name = ed.at[row_idx, col_name]
+                            batch_tc.append((dt, shift, doc_name))
+            
+            execute_query("""INSERT INTO shift_schedule_tc (shift_date, shift_time, doctor_name) VALUES %s ON CONFLICT (shift_date, shift_time) DO UPDATE SET doctor_name = EXCLUDED.doctor_name;""", batch_tc)
+            st.cache_data.clear(); st.success("Escala TC Eletiva salva!"); st.rerun()
+
+    with c_pdf_tc:
+        if not df_pivot_tc.empty:
+            pdf_bytes_tc = generate_pdf_tc(weeks_tc, df_pivot_tc, mes_nome_tc, ano_tc)
+            st.download_button(label="📄 BAIXAR RELATÓRIO TC PDF", data=pdf_bytes_tc, file_name=f"Escala_TC_{mes_nome_tc}_{ano_tc}.pdf", mime="application/pdf", use_container_width=True)
