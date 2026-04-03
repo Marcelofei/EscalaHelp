@@ -117,9 +117,14 @@ def fetch_data(query: str, params=None) -> pd.DataFrame:
 def init_db():
     query = """
     CREATE TABLE IF NOT EXISTS doctors (name TEXT PRIMARY KEY);
+    
+    /* Tabelas Escala Geral */
     CREATE TABLE IF NOT EXISTS shift_schedule (shift_date DATE, shift_time VARCHAR(10), doctor_name TEXT, PRIMARY KEY(shift_date, shift_time));
     CREATE TABLE IF NOT EXISTS fixed_schedule_4w (week_num INT, weekday INT, shift_time VARCHAR(10), doctor_name TEXT, PRIMARY KEY(week_num, weekday, shift_time));
+    
+    /* Tabelas Escala TC Eletiva */
     CREATE TABLE IF NOT EXISTS shift_schedule_tc (shift_date DATE, shift_time VARCHAR(10), doctor_name TEXT, PRIMARY KEY(shift_date, shift_time));
+    CREATE TABLE IF NOT EXISTS fixed_schedule_tc_4w (week_num INT, weekday INT, shift_time VARCHAR(10), doctor_name TEXT, PRIMARY KEY(week_num, weekday, shift_time));
     """
     execute_query(query)
 
@@ -191,20 +196,25 @@ with st.sidebar:
 # ==========================================
 st.title("🏥 Gestão de Escala de Radiologia")
 
-# ADICIONADO: Nova aba TC Eletiva na estrutura
-tab_escala, tab_tc, tab_padrao = st.tabs(["📅 Escala Mensal", "🖥️ Escala TC Eletiva", "⚙️ Padrão Rotativo (4 Semanas)"])
+# ADICIONADO: 4 Abas para controle total
+tab_escala, tab_tc, tab_padrao, tab_padrao_tc = st.tabs([
+    "📅 Escala Mensal", 
+    "🖥️ Escala TC Eletiva", 
+    "⚙️ Padrão Rotativo (Geral)", 
+    "⚙️ Padrão Rotativo (TC)"
+])
 
 # ---------------------------------------------------------
-# ABA 3: PADRÃO ROTATIVO (4 Semanas)
+# ABA 3: PADRÃO ROTATIVO (GERAL - 4 Semanas)
 # ---------------------------------------------------------
 with tab_padrao:
     c_info, c_vazio, c_btn_padrao = st.columns([4, 1, 2])
     with c_info:
-        st.subheader("Configurar Escala Espelho")
+        st.subheader("Configurar Escala Espelho - Geral")
         st.caption("Preencha o ciclo de 4 semanas.")
     with c_btn_padrao:
         st.write("")
-        if st.button("💾 Salvar Padrão Fixo", type="primary", use_container_width=True, key="btn_salvar_padrao"):
+        if st.button("💾 Salvar Padrão Fixo Geral", type="primary", use_container_width=True, key="btn_salvar_padrao"):
             batch_fix = []
             for w_num, ed_fix in st.session_state.get('edits_padrao', []):
                 for shift in ['Manhã', 'Tarde', 'Noite']:
@@ -236,6 +246,50 @@ with tab_padrao:
         all_fix_edits.append((w_num, ed_fix))
     
     st.session_state['edits_padrao'] = all_fix_edits
+
+# ---------------------------------------------------------
+# ABA 4: PADRÃO ROTATIVO (TC ELETIVA - 4 Semanas)
+# ---------------------------------------------------------
+with tab_padrao_tc:
+    c_info_tc, c_vazio_tc, c_btn_padrao_tc = st.columns([4, 1, 2])
+    with c_info_tc:
+        st.subheader("Configurar Escala Espelho - TC Eletiva")
+        st.caption("Preencha o ciclo de 4 semanas (Apenas Manhã e Tarde).")
+    with c_btn_padrao_tc:
+        st.write("")
+        if st.button("💾 Salvar Padrão Fixo TC", type="primary", use_container_width=True, key="btn_salvar_padrao_tc"):
+            batch_fix_tc = []
+            for w_num, ed_fix_tc in st.session_state.get('edits_padrao_tc', []):
+                for shift in ['Manhã', 'Tarde']:
+                    for wd in range(7):
+                        doc = ed_fix_tc.at[shift, str(wd)]
+                        if doc: batch_fix_tc.append((w_num, wd, shift, doc))
+            execute_query("DELETE FROM fixed_schedule_tc_4w;") 
+            if batch_fix_tc:
+                execute_query("INSERT INTO fixed_schedule_tc_4w (week_num, weekday, shift_time, doctor_name) VALUES %s;", batch_fix_tc)
+            st.cache_data.clear(); st.success("Padrão fixo TC atualizado!")
+            
+    df_fix_raw_tc = fetch_data("SELECT week_num, weekday, shift_time, doctor_name FROM fixed_schedule_tc_4w")
+    week_headers_fix_tc = ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo"]
+    cols_str_tc = [str(i) for i in range(7)]
+    all_fix_edits_tc = []
+    
+    for w_num in range(4):
+        st.markdown(f"#### Semana {w_num + 1}")
+        df_w_raw_tc = df_fix_raw_tc[df_fix_raw_tc['week_num'] == w_num] if not df_fix_raw_tc.empty else pd.DataFrame()
+        if not df_w_raw_tc.empty:
+            df_fix_pivot_tc = df_w_raw_tc.pivot(index='shift_time', columns='weekday', values='doctor_name').reindex(['Manhã', 'Tarde'])
+            df_fix_pivot_tc.columns = [str(int(c)) for c in df_fix_pivot_tc.columns]
+            df_fix_pivot_tc = df_fix_pivot_tc.reindex(columns=cols_str_tc).fillna("")
+        else:
+            df_fix_pivot_tc = pd.DataFrame("", index=['Manhã', 'Tarde'], columns=cols_str_tc)
+            
+        w_conf_fix_tc = {str(c): st.column_config.SelectboxColumn(week_headers_fix_tc[c], options=lista_medicos, width="small") for c in range(7)}
+        ed_fix_tc = st.data_editor(df_fix_pivot_tc, column_config=w_conf_fix_tc, use_container_width=True, key=f"ed_fixa_tc_w{w_num}")
+        all_fix_edits_tc.append((w_num, ed_fix_tc))
+    
+    st.session_state['edits_padrao_tc'] = all_fix_edits_tc
+
 
 # ---------------------------------------------------------
 # ABA 1: ESCALA DO MÊS GERAL
@@ -399,12 +453,38 @@ with tab_escala:
 # ABA 2: ESCALA TC ELETIVA (SEM FINANCEIRO E SEM NOITE)
 # ---------------------------------------------------------
 with tab_tc:
-    col_m_tc, col_a_tc, col_space_tc = st.columns([2, 1.5, 5.5])
+    col_m_tc, col_a_tc, col_space_tc, col_reset_tc = st.columns([2, 1.5, 3, 2.5])
     
     with col_m_tc: mes_nome_tc = st.selectbox("Mês de Referência", meses, index=datetime.date.today().month - 1, key="sel_mes_tc")
     with col_a_tc: ano_tc = st.selectbox("Ano", [2026], key="sel_ano_tc")
     mes_num_tc = meses.index(mes_nome_tc) + 1
     
+    with col_reset_tc:
+        st.write("") 
+        with st.popover("✨ Resetar para Padrão TC", use_container_width=True):
+            st.error("⚠️ Esta ação apagará permanentemente todas as edições manuais deste mês na TC.")
+            trava_seguranca_tc = st.checkbox("Estou ciente. Substituir escala TC.", key="trava_tc")
+            
+            if st.button("Confirmar Execução", type="primary", use_container_width=True, disabled=not trava_seguranca_tc, key="btn_exec_tc"):
+                df_fix_tc = fetch_data("SELECT week_num, weekday, shift_time, doctor_name FROM fixed_schedule_tc_4w WHERE doctor_name != ''")
+                if not df_fix_tc.empty:
+                    fix_map_tc = {(r['week_num'], int(r['weekday']), r['shift_time']): r['doctor_name'] for _, r in df_fix_tc.iterrows()}
+                    batch_a_tc = []
+                    cal_w_tc = calendar.monthcalendar(ano_tc, mes_num_tc)
+                    for i, w in enumerate(cal_w_tc):
+                        p_w = i % 4
+                        for wd, day in enumerate(w):
+                            if day > 0:
+                                dt = datetime.date(ano_tc, mes_num_tc, day)
+                                # Apenas Manhã e Tarde
+                                for s in ['Manhã', 'Tarde']:
+                                    doc = fix_map_tc.get((p_w, wd, s), "")
+                                    if doc: batch_a_tc.append((dt, s, doc))
+                    
+                    execute_query("DELETE FROM shift_schedule_tc WHERE EXTRACT(YEAR FROM shift_date) = %s AND EXTRACT(MONTH FROM shift_date) = %s", (ano_tc, mes_num_tc))
+                    execute_query("INSERT INTO shift_schedule_tc (shift_date, shift_time, doctor_name) VALUES %s;", batch_a_tc)
+                    st.cache_data.clear(); st.rerun()
+
     df_raw_tc = fetch_data("SELECT shift_date, shift_time, doctor_name FROM shift_schedule_tc WHERE EXTRACT(YEAR FROM shift_date) = %s AND EXTRACT(MONTH FROM shift_date) = %s", (ano_tc, mes_num_tc))
 
     if not df_raw_tc.empty:
