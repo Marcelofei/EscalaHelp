@@ -396,7 +396,7 @@ with tab_escala:
             st.download_button(label="📄 BAIXAR RELATÓRIO PDF", data=pdf_bytes, file_name=f"Escala_{mes_nome}_{ano}.pdf", mime="application/pdf", use_container_width=True)
 
 # ---------------------------------------------------------
-# ABA 2: ESCALA TC ELETIVA (SEM FINANCEIRO)
+# ABA 2: ESCALA TC ELETIVA (SEM FINANCEIRO E SEM NOITE)
 # ---------------------------------------------------------
 with tab_tc:
     col_m_tc, col_a_tc, col_space_tc = st.columns([2, 1.5, 5.5])
@@ -409,9 +409,11 @@ with tab_tc:
 
     if not df_raw_tc.empty:
         df_raw_tc['dia'] = pd.to_datetime(df_raw_tc['shift_date']).dt.day
-        df_pivot_tc = df_raw_tc.pivot(index='shift_time', columns='dia', values='doctor_name').reindex(['Manhã', 'Tarde', 'Noite']).fillna("")
+        # Ajustado para remover a Noite
+        df_pivot_tc = df_raw_tc.pivot(index='shift_time', columns='dia', values='doctor_name').reindex(['Manhã', 'Tarde']).fillna("")
     else: 
-        df_pivot_tc = pd.DataFrame(index=['Manhã', 'Tarde', 'Noite'])
+        # Ajustado para remover a Noite
+        df_pivot_tc = pd.DataFrame(index=['Manhã', 'Tarde'])
 
     if medico_alvo != "":
         st.subheader(f"📍 Módulo WhatsApp: Plantões de {medico_alvo} (TC Eletiva)")
@@ -427,11 +429,12 @@ with tab_tc:
 
     for i, week in enumerate(weeks_tc):
         st.markdown(f"#### Semana {i+1}")
-        w_data_tc = {f"wtc{i}_d{idx}": (["", "", ""] if day == 0 else (df_pivot_tc[day].tolist() if day in df_pivot_tc.columns else ["","",""])) for idx, day in enumerate(week)}
+        # Ajustado para retornar listas de apenas 2 posições (Manhã e Tarde)
+        w_data_tc = {f"wtc{i}_d{idx}": (["", ""] if day == 0 else (df_pivot_tc[day].tolist() if day in df_pivot_tc.columns else ["",""])) for idx, day in enumerate(week)}
         for k in w_data_tc: w_data_tc[k] = ["" if x is None or x == "None" else x for x in w_data_tc[k]]
         
         df_w_raw_tc = pd.DataFrame(w_data_tc)
-        df_w_raw_tc.index = ['Manhã', 'Tarde', 'Noite']
+        df_w_raw_tc.index = ['Manhã', 'Tarde']
         
         w_conf_tc = {f"wtc{i}_d{idx}": (st.column_config.TextColumn(week_headers[idx], disabled=True, width="small") if day == 0 else st.column_config.SelectboxColumn(f"{week_headers[idx]} {day:02d}", options=lista_medicos, width="small")) for idx, day in enumerate(week)}
         
@@ -444,7 +447,7 @@ with tab_tc:
 
     st.divider()
     
-    # FUNÇÃO DE PDF EXCLUSIVA PARA TC ELETIVA (SEM FINANCEIRO)
+    # FUNÇÃO DE PDF EXCLUSIVA PARA TC ELETIVA (SEM FINANCEIRO E SEM NOITE)
     def generate_pdf_tc(weeks, pivot, mes, ano):
         pdf = FPDF(orientation='L', unit='mm', format='A4')
         pdf.add_page()
@@ -469,7 +472,8 @@ with tab_tc:
                 pdf.cell(col_w_day, h_row, txt, 1, 0, 'C', True)
             pdf.ln()
 
-            for shift in ['Manhã', 'Tarde', 'Noite']:
+            # Ajustado para Manhã e Tarde apenas
+            for shift in ['Manhã', 'Tarde']:
                 pdf.set_font("Arial", 'B', font_tab); pdf.set_fill_color(240, 240, 240); pdf.set_text_color(0, 45, 98)
                 shift_label = shift.replace('ã', 'a'); pdf.cell(col_w_label, h_row, shift_label, 1, 0, 'C', True)
                 pdf.set_font("Arial", '', font_tab); pdf.set_text_color(0, 0, 0) 
@@ -489,7 +493,8 @@ with tab_tc:
     with c_save_tc:
         if st.button("💾 SALVAR ESCALA TC ELETIVA", type="primary", use_container_width=True):
             batch_tc = []
-            shifts = ['Manhã', 'Tarde', 'Noite']
+            # Ajustado para Manhã e Tarde apenas
+            shifts = ['Manhã', 'Tarde']
             for week_idx, (w_days, ed) in enumerate(all_edits_tc):
                 for idx, day in enumerate(w_days):
                     if day > 0:
