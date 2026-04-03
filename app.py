@@ -1,3 +1,13 @@
+Entendido. Ajustei a lógica das duas abas de **TC Eletiva** (Mensal e Padrão Fixo) para ignorar completamente os domingos. 
+
+As mudanças incluíram:
+1.  **Interface:** Redução de 7 para 6 colunas nos editores de dados da TC.
+2.  **Cálculo de PDF:** Reajuste da largura das colunas para dividir o espaço entre 6 dias (Seg-Sáb), removendo o domingo do relatório.
+3.  **Lógica de Banco:** Os loops de salvamento e o botão de "Reset" agora ignoram o índice 6 (domingo) do calendário.
+
+Substitua o conteúdo do seu `app.py` pelo código abaixo:
+
+```python
 import streamlit as st
 import pandas as pd
 import psycopg2
@@ -117,12 +127,8 @@ def fetch_data(query: str, params=None) -> pd.DataFrame:
 def init_db():
     query = """
     CREATE TABLE IF NOT EXISTS doctors (name TEXT PRIMARY KEY);
-    
-    /* Tabelas Escala Geral */
     CREATE TABLE IF NOT EXISTS shift_schedule (shift_date DATE, shift_time VARCHAR(10), doctor_name TEXT, PRIMARY KEY(shift_date, shift_time));
     CREATE TABLE IF NOT EXISTS fixed_schedule_4w (week_num INT, weekday INT, shift_time VARCHAR(10), doctor_name TEXT, PRIMARY KEY(week_num, weekday, shift_time));
-    
-    /* Tabelas Escala TC Eletiva */
     CREATE TABLE IF NOT EXISTS shift_schedule_tc (shift_date DATE, shift_time VARCHAR(10), doctor_name TEXT, PRIMARY KEY(shift_date, shift_time));
     CREATE TABLE IF NOT EXISTS fixed_schedule_tc_4w (week_num INT, weekday INT, shift_time VARCHAR(10), doctor_name TEXT, PRIMARY KEY(week_num, weekday, shift_time));
     """
@@ -196,7 +202,6 @@ with st.sidebar:
 # ==========================================
 st.title("🏥 Gestão de Escala de Radiologia")
 
-# ADICIONADO: 4 Abas para controle total
 tab_escala, tab_tc, tab_padrao, tab_padrao_tc = st.tabs([
     "📅 Escala Mensal", 
     "🖥️ Escala TC Eletiva", 
@@ -248,20 +253,20 @@ with tab_padrao:
     st.session_state['edits_padrao'] = all_fix_edits
 
 # ---------------------------------------------------------
-# ABA 4: PADRÃO ROTATIVO (TC ELETIVA - 4 Semanas)
+# ABA 4: PADRÃO ROTATIVO (TC ELETIVA - 4 Semanas - SEM DOMINGO)
 # ---------------------------------------------------------
 with tab_padrao_tc:
     c_info_tc, c_vazio_tc, c_btn_padrao_tc = st.columns([4, 1, 2])
     with c_info_tc:
         st.subheader("Configurar Escala Espelho - TC Eletiva")
-        st.caption("Preencha o ciclo de 4 semanas (Apenas Manhã e Tarde).")
+        st.caption("Preencha o ciclo de 4 semanas (Apenas Seg-Sáb).")
     with c_btn_padrao_tc:
         st.write("")
         if st.button("💾 Salvar Padrão Fixo TC", type="primary", use_container_width=True, key="btn_salvar_padrao_tc"):
             batch_fix_tc = []
             for w_num, ed_fix_tc in st.session_state.get('edits_padrao_tc', []):
                 for shift in ['Manhã', 'Tarde']:
-                    for wd in range(7):
+                    for wd in range(6): # Apenas 0 a 5 (Segunda a Sábado)
                         doc = ed_fix_tc.at[shift, str(wd)]
                         if doc: batch_fix_tc.append((w_num, wd, shift, doc))
             execute_query("DELETE FROM fixed_schedule_tc_4w;") 
@@ -270,8 +275,8 @@ with tab_padrao_tc:
             st.cache_data.clear(); st.success("Padrão fixo TC atualizado!")
             
     df_fix_raw_tc = fetch_data("SELECT week_num, weekday, shift_time, doctor_name FROM fixed_schedule_tc_4w")
-    week_headers_fix_tc = ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo"]
-    cols_str_tc = [str(i) for i in range(7)]
+    week_headers_fix_tc = ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado"] # Removido Domingo
+    cols_str_tc = [str(i) for i in range(6)]
     all_fix_edits_tc = []
     
     for w_num in range(4):
@@ -284,12 +289,11 @@ with tab_padrao_tc:
         else:
             df_fix_pivot_tc = pd.DataFrame("", index=['Manhã', 'Tarde'], columns=cols_str_tc)
             
-        w_conf_fix_tc = {str(c): st.column_config.SelectboxColumn(week_headers_fix_tc[c], options=lista_medicos, width="small") for c in range(7)}
+        w_conf_fix_tc = {str(c): st.column_config.SelectboxColumn(week_headers_fix_tc[c], options=lista_medicos, width="small") for c in range(6)}
         ed_fix_tc = st.data_editor(df_fix_pivot_tc, column_config=w_conf_fix_tc, use_container_width=True, key=f"ed_fixa_tc_w{w_num}")
         all_fix_edits_tc.append((w_num, ed_fix_tc))
     
     st.session_state['edits_padrao_tc'] = all_fix_edits_tc
-
 
 # ---------------------------------------------------------
 # ABA 1: ESCALA DO MÊS GERAL
@@ -450,7 +454,7 @@ with tab_escala:
             st.download_button(label="📄 BAIXAR RELATÓRIO PDF", data=pdf_bytes, file_name=f"Escala_{mes_nome}_{ano}.pdf", mime="application/pdf", use_container_width=True)
 
 # ---------------------------------------------------------
-# ABA 2: ESCALA TC ELETIVA (SEM FINANCEIRO E SEM NOITE)
+# ABA 2: ESCALA TC ELETIVA (SEM DOMINGO E SEM NOITE)
 # ---------------------------------------------------------
 with tab_tc:
     col_m_tc, col_a_tc, col_space_tc, col_reset_tc = st.columns([2, 1.5, 3, 2.5])
@@ -473,10 +477,9 @@ with tab_tc:
                     cal_w_tc = calendar.monthcalendar(ano_tc, mes_num_tc)
                     for i, w in enumerate(cal_w_tc):
                         p_w = i % 4
-                        for wd, day in enumerate(w):
+                        for wd, day in enumerate(w[:6]): # Apenas Segunda a Sábado
                             if day > 0:
                                 dt = datetime.date(ano_tc, mes_num_tc, day)
-                                # Apenas Manhã e Tarde
                                 for s in ['Manhã', 'Tarde']:
                                     doc = fix_map_tc.get((p_w, wd, s), "")
                                     if doc: batch_a_tc.append((dt, s, doc))
@@ -489,10 +492,8 @@ with tab_tc:
 
     if not df_raw_tc.empty:
         df_raw_tc['dia'] = pd.to_datetime(df_raw_tc['shift_date']).dt.day
-        # Ajustado para remover a Noite
         df_pivot_tc = df_raw_tc.pivot(index='shift_time', columns='dia', values='doctor_name').reindex(['Manhã', 'Tarde']).fillna("")
     else: 
-        # Ajustado para remover a Noite
         df_pivot_tc = pd.DataFrame(index=['Manhã', 'Tarde'])
 
     if medico_alvo != "":
@@ -502,32 +503,35 @@ with tab_tc:
         st.dataframe(df_pivot_tc.style.map(style_highlight_tc), use_container_width=True, hide_index=False)
 
     st.divider()
-    st.subheader("📝 Edição da Escala TC Eletiva")
+    st.subheader("📝 Edição da Escala TC Eletiva (Seg-Sáb)")
     calendar.setfirstweekday(calendar.MONDAY)
     weeks_tc = calendar.monthcalendar(ano_tc, mes_num_tc)
+    week_headers_tc = ["Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"] # Removido Dom
     all_edits_tc = []
 
     for i, week in enumerate(weeks_tc):
         st.markdown(f"#### Semana {i+1}")
-        # Ajustado para retornar listas de apenas 2 posições (Manhã e Tarde)
-        w_data_tc = {f"wtc{i}_d{idx}": (["", ""] if day == 0 else (df_pivot_tc[day].tolist() if day in df_pivot_tc.columns else ["",""])) for idx, day in enumerate(week)}
+        # Filtrar o domingo (último dia da lista de 7)
+        week_tc = week[:6]
+        
+        w_data_tc = {f"wtc{i}_d{idx}": (["", ""] if day == 0 else (df_pivot_tc[day].tolist() if day in df_pivot_tc.columns else ["",""])) for idx, day in enumerate(week_tc)}
         for k in w_data_tc: w_data_tc[k] = ["" if x is None or x == "None" else x for x in w_data_tc[k]]
         
         df_w_raw_tc = pd.DataFrame(w_data_tc)
         df_w_raw_tc.index = ['Manhã', 'Tarde']
         
-        w_conf_tc = {f"wtc{i}_d{idx}": (st.column_config.TextColumn(week_headers[idx], disabled=True, width="small") if day == 0 else st.column_config.SelectboxColumn(f"{week_headers[idx]} {day:02d}", options=lista_medicos, width="small")) for idx, day in enumerate(week)}
+        w_conf_tc = {f"wtc{i}_d{idx}": (st.column_config.TextColumn(week_headers_tc[idx], disabled=True, width="small") if day == 0 else st.column_config.SelectboxColumn(f"{week_headers_tc[idx]} {day:02d}", options=lista_medicos, width="small")) for idx, day in enumerate(week_tc)}
         
         df_to_edit_tc = df_w_raw_tc.reset_index().rename(columns={'index': 'Turno'})
         headers_final_tc = {'Turno': st.column_config.TextColumn("Turno", disabled=True, width="small")}
         headers_final_tc.update(w_conf_tc)
         
         ed_tc = st.data_editor(df_to_edit_tc, column_config=headers_final_tc, use_container_width=True, key=f"ed_tc_w_{i}", hide_index=True)
-        all_edits_tc.append((week, ed_tc))
+        all_edits_tc.append((week_tc, ed_tc))
 
     st.divider()
     
-    # FUNÇÃO DE PDF EXCLUSIVA PARA TC ELETIVA (SEM FINANCEIRO E SEM NOITE)
+    # FUNÇÃO DE PDF EXCLUSIVA PARA TC ELETIVA (SEM DOMINGO)
     def generate_pdf_tc(weeks, pivot, mes, ano):
         pdf = FPDF(orientation='L', unit='mm', format='A4')
         pdf.add_page()
@@ -540,26 +544,27 @@ with tab_tc:
         pdf.set_font("Arial", 'B', font_tit); pdf.set_text_color(0, 45, 98)
         pdf.cell(0, 10, f"HOSPITAL HELP - ESCALA TC ELETIVA - {mes.upper()} / {ano}", ln=True, align='C'); pdf.ln(2)
 
-        headers = ["Seg", "Ter", "Qua", "Qui", "Sex", "Sab", "Dom"]
-        col_w_label = 25; col_w_day = (pdf.w - (pdf.l_margin + pdf.r_margin) - col_w_label) / 7
+        headers_tc_pdf = ["Seg", "Ter", "Qua", "Qui", "Sex", "Sab"]
+        col_w_label = 25; col_w_day = (pdf.w - (pdf.l_margin + pdf.r_margin) - col_w_label) / 6 # Dividir por 6
 
         for i, week in enumerate(weeks):
             pdf.set_font("Arial", 'B', font_tab + 1); pdf.set_text_color(0, 45, 98); pdf.cell(0, h_row, f"SEMANA {i+1}", ln=True)
             pdf.set_font("Arial", 'B', font_tab); pdf.set_fill_color(0, 45, 98); pdf.set_text_color(255, 255, 255) 
             pdf.cell(col_w_label, h_row, "Turno", 1, 0, 'C', True)
-            for idx, day in enumerate(week):
-                txt = f"{headers[idx]} {day:02d}" if day > 0 else headers[idx]
+            
+            week_days_tc = week[:6]
+            for idx, day in enumerate(week_days_tc):
+                txt = f"{headers_tc_pdf[idx]} {day:02d}" if day > 0 else headers_tc_pdf[idx]
                 pdf.cell(col_w_day, h_row, txt, 1, 0, 'C', True)
             pdf.ln()
 
-            # Ajustado para Manhã e Tarde apenas
             for shift in ['Manhã', 'Tarde']:
                 pdf.set_font("Arial", 'B', font_tab); pdf.set_fill_color(240, 240, 240); pdf.set_text_color(0, 45, 98)
                 shift_label = shift.replace('ã', 'a'); pdf.cell(col_w_label, h_row, shift_label, 1, 0, 'C', True)
                 pdf.set_font("Arial", '', font_tab); pdf.set_text_color(0, 0, 0) 
-                char_limit = 18 if font_tab >= 9 else (22 if font_tab == 8 else 25)
+                char_limit = 22
 
-                for day in week:
+                for day in week_days_tc:
                     if day == 0: pdf.cell(col_w_day, h_row, "-", 1, 0, 'C')
                     else:
                         nome = str(pivot.at[shift, day]) if day in pivot.columns else ""
@@ -573,13 +578,12 @@ with tab_tc:
     with c_save_tc:
         if st.button("💾 SALVAR ESCALA TC ELETIVA", type="primary", use_container_width=True):
             batch_tc = []
-            # Ajustado para Manhã e Tarde apenas
-            shifts = ['Manhã', 'Tarde']
+            shifts_tc = ['Manhã', 'Tarde']
             for week_idx, (w_days, ed) in enumerate(all_edits_tc):
-                for idx, day in enumerate(w_days):
+                for idx, day in enumerate(w_days): # w_days já é Seg-Sáb (6 dias)
                     if day > 0:
                         dt = datetime.date(ano_tc, mes_num_tc, day)
-                        for row_idx, shift in enumerate(shifts):
+                        for row_idx, shift in enumerate(shifts_tc):
                             col_name = f"wtc{week_idx}_d{idx}"
                             doc_name = ed.at[row_idx, col_name]
                             batch_tc.append((dt, shift, doc_name))
@@ -591,3 +595,4 @@ with tab_tc:
         if not df_pivot_tc.empty:
             pdf_bytes_tc = generate_pdf_tc(weeks_tc, df_pivot_tc, mes_nome_tc, ano_tc)
             st.download_button(label="📄 BAIXAR RELATÓRIO TC PDF", data=pdf_bytes_tc, file_name=f"Escala_TC_{mes_nome_tc}_{ano_tc}.pdf", mime="application/pdf", use_container_width=True)
+```
