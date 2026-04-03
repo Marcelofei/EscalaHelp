@@ -1,13 +1,3 @@
-Entendido. Ajustei a lógica das duas abas de **TC Eletiva** (Mensal e Padrão Fixo) para ignorar completamente os domingos. 
-
-As mudanças incluíram:
-1.  **Interface:** Redução de 7 para 6 colunas nos editores de dados da TC.
-2.  **Cálculo de PDF:** Reajuste da largura das colunas para dividir o espaço entre 6 dias (Seg-Sáb), removendo o domingo do relatório.
-3.  **Lógica de Banco:** Os loops de salvamento e o botão de "Reset" agora ignoram o índice 6 (domingo) do calendário.
-
-Substitua o conteúdo do seu `app.py` pelo código abaixo:
-
-```python
 import streamlit as st
 import pandas as pd
 import psycopg2
@@ -595,4 +585,3 @@ with tab_tc:
         if not df_pivot_tc.empty:
             pdf_bytes_tc = generate_pdf_tc(weeks_tc, df_pivot_tc, mes_nome_tc, ano_tc)
             st.download_button(label="📄 BAIXAR RELATÓRIO TC PDF", data=pdf_bytes_tc, file_name=f"Escala_TC_{mes_nome_tc}_{ano_tc}.pdf", mime="application/pdf", use_container_width=True)
-```
