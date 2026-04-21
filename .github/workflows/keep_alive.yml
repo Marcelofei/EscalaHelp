@@ -1,0 +1,20 @@
+name: Supabase Keep Alive
+
+on:
+  schedule:
+    # Executa às 00:00 de cada 3 dias
+    - cron: '0 0 */3 * *'
+  workflow_dispatch: # Permite execução manual
+
+jobs:
+  ping_db:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install PostgreSQL Client
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+
+      - name: Execute Keep-Alive Query
+        env:
+          DATABASE_URL: postgresql://postgres.xumwhsikumbsdqacfewj:Feitosa1104@aws-1-sa-east-1.pooler.supabase.com:5432/postgres?sslmode=require
+        run: |
+          psql "$DATABASE_URL" -c "SELECT 1;"
