@@ -116,22 +116,6 @@ except Exception as e:
 # =================================================================
 # 3. IDENTIDADE VISUAL
 # =================================================================
-# Conceito: "painel de controle" de escala -- precisão e legibilidade em
-# primeiro lugar, mantendo o azul institucional do Hospital HELP como
-# acento de marca, só que calibrado pra funcionar de verdade em tema escuro
-# (em vez de forçar fundo branco por cima do escuro nativo, como estava antes).
-#
-# Paleta:
-#   Base #0B1220        -> fundo da página
-#   Surface #131B2E      -> cartões, tabelas, formulários
-#   Surface-sidebar #0E1526
-#   Border #243049
-#   Texto #E7ECF5 / muted #8B97AE
-#   Marca (HELP blue, calibrado pro escuro) #2F8FE0
-#   Crítico (ações destrutivas) #E0695C
-#   Turnos: Manhã #E0A847 (ambar) / Tarde #2F8FE0 (azul) / Noite #7C6FE0 (índigo)
-# Tipografia: Inter (texto/títulos) + JetBrains Mono (datas e valores financeiros).
-
 def aplicar_estilo_visual():
     st.markdown("""
     <style>
@@ -547,7 +531,7 @@ with tab_escala:
         return bytes(pdf.output(dest='S'))
 
     st.divider()
-    c_save, c_pdf, c_csv = st.columns(3)
+    c_save, c_pdf = st.columns(2)
 
     with c_save:
         if st.button("💾 SALVAR ESCALA MENSAL", type="primary", use_container_width=True):
@@ -572,10 +556,3 @@ with tab_escala:
             st.download_button(label="📄 Relatório Completo (PDF)", data=pdf_bytes, file_name=f"Escala_{mes_nome}_{ano}.pdf", mime="application/pdf", use_container_width=True)
         else:
             st.caption("Sem escala pra gerar PDF ainda.")
-
-    with c_csv:
-        if not resumo_rh.empty:
-            csv_financeiro = resumo_rh.rename(columns={'doctor_name': 'Medico', 'Total': 'Total_Reais'}).to_csv(index=False).encode('utf-8')
-            st.download_button(label="📊 Fechamento (CSV)", data=csv_financeiro, file_name=f"Fechamento_{mes_nome}_{ano}.csv", mime="text/csv", use_container_width=True)
-        else:
-            st.caption("Sem fechamento financeiro pra exportar ainda.")
