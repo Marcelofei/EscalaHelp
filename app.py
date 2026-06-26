@@ -100,6 +100,10 @@ def init_db():
     CREATE TABLE IF NOT EXISTS fixed_schedule_4w (week_num INT, weekday INT, shift_time VARCHAR(10), doctor_name TEXT, PRIMARY KEY(week_num, weekday, shift_time));
     """
     execute_query(query)
+    # Médico "inativo" em vez de excluído -- preserva o histórico de plantões antigos
+    # mesmo depois que alguém sai da equipe. DEFAULT 1 já marca os médicos existentes
+    # como ativos automaticamente.
+    execute_query("ALTER TABLE doctors ADD COLUMN IF NOT EXISTS ativo INTEGER DEFAULT 1;")
 
 try:
     init_db()
@@ -284,29 +288,29 @@ with st.sidebar:
     )
     st.divider()
 
-    df_docs = fetch_data("SELECT name FROM doctors ORDER BY name;")
-    lista_medicos = [""] + df_docs['name'].tolist()
+    df_docs = fetch_data("SELECT name, ativo FROM doctors ORDER BY ativo DESC, name;")
+    lista_medicos_ativos = [""] + df_docs[df_docs['ativo'] == 1]['name'].tolist()  # pra atribuir turnos
+    lista_medicos_todos = [""] + df_docs['name'].tolist()  # pra consultar histórico (inclui inativos)
 
     st.markdown("<div class='nav-eyebrow'>Destacar na Escala</div>", unsafe_allow_html=True)
-    medico_alvo = st.selectbox("Médico", lista_medicos, label_visibility="collapsed")
+    medico_alvo = st.selectbox("Médico", lista_medicos_todos, label_visibility="collapsed")
 
     st.markdown("<div class='nav-eyebrow'>Equipe</div>", unsafe_allow_html=True)
     novo = st.text_input("Adicionar médico", label_visibility="collapsed", placeholder="Nome do médico")
     if st.button("➕ Adicionar à Equipe", use_container_width=True):
         if novo.strip():
-            execute_query("INSERT INTO doctors (name) VALUES (%s) ON CONFLICT DO NOTHING;", (novo.strip(),))
+            execute_query("INSERT INTO doctors (name, ativo) VALUES (%s, 1) ON CONFLICT DO NOTHING;", (novo.strip(),))
             st.rerun()
 
     if not df_docs.empty:
         with st.expander(f"Gerenciar equipe ({len(df_docs)} médicos)"):
-            for m in df_docs['name']:
-                st.write(f"• {m}")
-            st.divider()
-            med_remover = st.selectbox("Remover da equipe:", [""] + df_docs['name'].tolist(), key="sel_remover_medico")
-            if med_remover:
-                confirma_remocao = st.checkbox(f"Confirmo remover {med_remover}", key="confirma_remover_medico")
-                if st.button("🗑️ Remover Médico", disabled=not confirma_remocao, use_container_width=True):
-                    execute_query("DELETE FROM doctors WHERE name = %s;", (med_remover,))
+            st.caption("Médicos inativos saem das opções de atribuição de turno, mas o histórico de plantões antigos deles continua intacto.")
+            for _, row in df_docs.iterrows():
+                nome, ativo = row['name'], int(row['ativo'])
+                c1, c2 = st.columns([3.2, 1.8])
+                c1.write(f"{'🟢' if ativo else '⚪'} {nome}")
+                if c2.button("Inativar" if ativo else "Reativar", key=f"toggle_ativo_{nome}", use_container_width=True):
+                    execute_query("UPDATE doctors SET ativo = %s WHERE name = %s;", (0 if ativo else 1, nome))
                     st.rerun()
 
     st.divider()
@@ -373,7 +377,7 @@ with tab_padrao:
         else:
             df_fix_pivot = pd.DataFrame("", index=['Manhã', 'Tarde', 'Noite'], columns=cols_str)
 
-        w_conf_fix = {str(c): st.column_config.SelectboxColumn(week_headers_fix[c], options=lista_medicos, width="small") for c in range(7)}
+        w_conf_fix = {str(c): st.column_config.SelectboxColumn(week_headers_fix[c], options=lista_medicos_ativos, width="small") for c in range(7)}
         ed_fix = st.data_editor(df_fix_pivot, column_config=w_conf_fix, use_container_width=True, key=f"ed_fixa_w{w_num}")
         all_fix_edits.append((w_num, ed_fix))
 
@@ -429,9 +433,27 @@ with tab_escala:
 
     if medico_alvo != "":
         st.subheader(f"🔎 Visão Individual — {medico_alvo}")
-        def style_highlight(val):
-            return 'background-color: #2F8FE0; color: #061018; font-weight: bold; border: 1px solid #243049;' if val == medico_alvo else 'background-color: #131B2E; color: #E7ECF5; border: 1px solid #243049;'
-        st.dataframe(df_pivot.style.map(style_highlight), use_container_width=True, hide_index=False)
+        modo_visao = st.radio("Modo de visualização", ["🗂️ Grade do Mês", "📱 Lista (mobile)"], horizontal=True, key="modo_visao_individual", label_visibility="collapsed")
+
+        if modo_visao == "🗂️ Grade do Mês":
+            def style_highlight(val):
+                return 'background-color: #2F8FE0; color: #061018; font-weight: bold; border: 1px solid #243049;' if val == medico_alvo else 'background-color: #131B2E; color: #E7ECF5; border: 1px solid #243049;'
+            st.dataframe(df_pivot.style.map(style_highlight), use_container_width=True, hide_index=False)
+        else:
+            # Lista simples (data -> turno), pensada pra ler bem numa tela de celular --
+            # a grade de 7 colunas funciona em desktop, mas fica ilegível no telefone.
+            df_pessoal = df_raw[df_raw['doctor_name'] == medico_alvo].copy()
+            if df_pessoal.empty:
+                st.info(f"Nenhum plantão encontrado para {medico_alvo} em {mes_nome}/{ano}.")
+            else:
+                dias_semana_pt = ["Seg", "Ter", "Qua", "Qui", "Sex", "Sáb", "Dom"]
+                rotulo_turno_lista = {"Manhã": "🌅 Manhã", "Tarde": "☀️ Tarde", "Noite": "🌙 Noite"}
+                df_pessoal = df_pessoal.sort_values('shift_date').copy()
+                df_pessoal['Data'] = df_pessoal['shift_date'].apply(
+                    lambda d: f"{dias_semana_pt[pd.Timestamp(d).weekday()]} {pd.Timestamp(d).strftime('%d/%m')}"
+                )
+                df_pessoal['Turno'] = df_pessoal['shift_time'].map(rotulo_turno_lista)
+                st.dataframe(df_pessoal[['Data', 'Turno']], use_container_width=True, hide_index=True)
         st.divider()
 
     st.subheader("📝 Edição da Escala Mensal")
@@ -450,7 +472,7 @@ with tab_escala:
         df_w_raw = pd.DataFrame(w_data)
         df_w_raw.index = ['Manhã', 'Tarde', 'Noite']
 
-        w_conf = {f"w{i}_d{idx}": (st.column_config.TextColumn(week_headers[idx], disabled=True, width="small") if day == 0 else st.column_config.SelectboxColumn(f"{week_headers[idx]} {day:02d}", options=lista_medicos, width="small")) for idx, day in enumerate(week)}
+        w_conf = {f"w{i}_d{idx}": (st.column_config.TextColumn(week_headers[idx], disabled=True, width="small") if day == 0 else st.column_config.SelectboxColumn(f"{week_headers[idx]} {day:02d}", options=lista_medicos_ativos, width="small")) for idx, day in enumerate(week)}
 
         df_to_edit = df_w_raw.reset_index().rename(columns={'index': 'Turno'})
         df_to_edit['Turno'] = df_to_edit['Turno'].map(rotulo_turno)
@@ -524,15 +546,8 @@ with tab_escala:
 
         return bytes(pdf.output(dest='S'))
 
-    if not resumo_rh.empty:
-        st.subheader("💰 Fechamento Financeiro")
-        resumo_fmt = resumo_rh.rename(columns={'doctor_name': 'Médico', 'Total': 'Total (R$)'})
-        st.dataframe(
-            resumo_fmt.style.format({'Total (R$)': lambda v: f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")}),
-            use_container_width=True, hide_index=True
-        )
-
-    c_save, c_pdf = st.columns(2)
+    st.divider()
+    c_save, c_pdf, c_csv = st.columns(3)
 
     with c_save:
         if st.button("💾 SALVAR ESCALA MENSAL", type="primary", use_container_width=True):
@@ -554,4 +569,13 @@ with tab_escala:
     with c_pdf:
         if not df_pivot.empty:
             pdf_bytes = generate_pdf_semanal(weeks, df_pivot, resumo_rh, mes_nome, ano)
-            st.download_button(label="📄 BAIXAR RELATÓRIO PDF", data=pdf_bytes, file_name=f"Escala_{mes_nome}_{ano}.pdf", mime="application/pdf", use_container_width=True)
+            st.download_button(label="📄 Relatório Completo (PDF)", data=pdf_bytes, file_name=f"Escala_{mes_nome}_{ano}.pdf", mime="application/pdf", use_container_width=True)
+        else:
+            st.caption("Sem escala pra gerar PDF ainda.")
+
+    with c_csv:
+        if not resumo_rh.empty:
+            csv_financeiro = resumo_rh.rename(columns={'doctor_name': 'Medico', 'Total': 'Total_Reais'}).to_csv(index=False).encode('utf-8')
+            st.download_button(label="📊 Fechamento (CSV)", data=csv_financeiro, file_name=f"Fechamento_{mes_nome}_{ano}.csv", mime="text/csv", use_container_width=True)
+        else:
+            st.caption("Sem fechamento financeiro pra exportar ainda.")
