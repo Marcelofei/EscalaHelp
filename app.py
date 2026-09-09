@@ -10,12 +10,13 @@ import os
 import io
 import json
 import zipfile
+import html
 from fpdf import FPDF
 
 # =================================================================
 # 1. CONFIGURAÇÃO DA PÁGINA
 # =================================================================
-st.set_page_config(page_title="Hospital HELP — Escala de Radiologia", layout="wide", page_icon="🩻")
+st.set_page_config(page_title="Hospital HELP — Escala de Radiologia", layout="wide", page_icon="🩻", initial_sidebar_state="collapsed")
 
 TURNOS = ["Manhã", "Tarde", "Noite"]
 MESES = ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho",
@@ -98,6 +99,7 @@ def execute_query(query: str, params=None) -> None:
         with conn.cursor() as cur:
             cur.execute(query, params)
     _with_connection(_exec, transactional=False)
+    st.cache_data.clear()
 
 
 def execute_values_query(query: str, rows: list) -> None:
@@ -107,6 +109,7 @@ def execute_values_query(query: str, rows: list) -> None:
         with conn.cursor() as cur:
             psycopg2.extras.execute_values(cur, query, rows)
     _with_connection(_exec, transactional=False)
+    st.cache_data.clear()
 
 
 def execute_transacional(operacoes: list) -> None:
@@ -120,6 +123,7 @@ def execute_transacional(operacoes: list) -> None:
                 else:
                     cur.execute(query, params)
     _with_connection(_exec, transactional=True)
+    st.cache_data.clear()
 
 
 def fetch_data(query: str, params=None) -> pd.DataFrame:
@@ -144,6 +148,7 @@ def _add_constraint_if_missing(table, name, definition):
     """)
 
 
+@st.cache_resource(show_spinner=False)
 def init_db():
     # Estrutura compatível com instalações antigas.
     execute_query("""
@@ -264,6 +269,7 @@ def init_db():
         VALUES ('rotation_anchor_date', %s)
         ON CONFLICT (key) DO NOTHING;
     """, (ancora_default.isoformat(),))
+    return True
 
 
 try:
@@ -287,6 +293,24 @@ def month_bounds(ano, mes):
     return ini, fim
 
 
+@st.cache_data(ttl=30, show_spinner=False)
+def fetch_doctors():
+    return fetch_data("SELECT id, name, ativo FROM doctors ORDER BY ativo DESC, name")
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def fetch_fixed_pattern():
+    return fetch_data("""
+        SELECT f.week_num, f.weekday, f.shift_time, f.doctor_id,
+               COALESCE(d.name, f.doctor_name) AS doctor_name
+        FROM fixed_schedule_4w f
+        LEFT JOIN doctors d ON d.id = f.doctor_id
+        WHERE f.doctor_id IS NOT NULL
+        ORDER BY f.week_num, f.weekday, f.shift_time
+    """)
+
+
+@st.cache_data(ttl=20, show_spinner=False)
 def fetch_month_schedule(ano, mes):
     ini, fim = month_bounds(ano, mes)
     return fetch_data("""
@@ -299,6 +323,7 @@ def fetch_month_schedule(ano, mes):
     """, (ini, fim))
 
 
+@st.cache_data(ttl=300, show_spinner=False)
 def get_shift_types():
     df = fetch_data("SELECT name, start_time, end_time, value FROM shift_types ORDER BY CASE name WHEN 'Manhã' THEN 1 WHEN 'Tarde' THEN 2 ELSE 3 END")
     if df.empty:
@@ -307,6 +332,7 @@ def get_shift_types():
     return df
 
 
+@st.cache_data(ttl=300, show_spinner=False)
 def get_rotation_anchor():
     df = fetch_data("SELECT value FROM app_config WHERE key='rotation_anchor_date'")
     if df.empty:
@@ -363,6 +389,44 @@ def schedule_to_pivot(df, ano, mes):
         if day not in pivot.columns:
             pivot[day] = ""
     return pivot.reindex(columns=range(1, calendar.monthrange(ano, mes)[1] + 1)).fillna("")
+
+
+def render_schedule_calendar(pivot, ano, mes, medico_alvo=""):
+    """Calendário mensal somente-leitura em HTML leve; evita vários st.dataframe no uso cotidiano."""
+    calendar.setfirstweekday(calendar.MONDAY)
+    weeks = calendar.monthcalendar(ano, mes)
+    hoje_local = datetime.date.today()
+    dot_class = {"Manhã": "manha", "Tarde": "tarde", "Noite": "noite"}
+    turn_code = {"Manhã": "M", "Tarde": "T", "Noite": "N"}
+    parts = ["<div class='schedule-calendar-wrap'><div class='schedule-calendar'>"]
+    for wd in DIAS_SEMANA_CURTO:
+        parts.append(f"<div class='cal-weekday'>{html.escape(wd)}</div>")
+    for week in weeks:
+        for day in week:
+            if day == 0:
+                parts.append("<div class='cal-day empty'></div>")
+                continue
+            dt = datetime.date(ano, mes, day)
+            today_cls = " today" if dt == hoje_local else ""
+            parts.append(f"<div class='cal-day{today_cls}'><div class='cal-date'>{day:02d}</div>")
+            for turno in TURNOS:
+                nome = ""
+                if day in pivot.columns:
+                    raw = pivot.at[turno, day]
+                    nome = "" if pd.isna(raw) else str(raw).strip()
+                selected = bool(medico_alvo and nome == medico_alvo)
+                selected_cls = " selected" if selected else ""
+                nome_html = html.escape(nome if nome else "—")
+                parts.append(
+                    f"<div class='shift-line{selected_cls}'>"
+                    f"<span class='turn-dot {dot_class[turno]}'></span>"
+                    f"<span class='turn-code'>{turn_code[turno]}</span>"
+                    f"<span class='doctor' title='{html.escape(nome, quote=True)}'>{nome_html}</span>"
+                    "</div>"
+                )
+            parts.append("</div>")
+    parts.append("</div></div>")
+    st.markdown("".join(parts), unsafe_allow_html=True)
 
 
 def current_state_from_edits(all_edits, ano, mes):
@@ -585,7 +649,30 @@ def aplicar_estilo_visual():
     .help-header .badge { width:46px; height:46px; font-size:1.15rem; }.sidebar-brand .badge { width:44px; height:44px; font-size:1.05rem; flex-shrink:0; }
     .help-header .titles h1 { margin:0; font-size:1.2rem; line-height:1.2; }.help-header .titles span { color:#7B8AA3; font-size:.85rem; }
     .sidebar-brand { display:flex; align-items:center; gap:12px; text-align:left; padding:6px 0 14px 0; }.sidebar-brand .nome { font-weight:700; font-size:.95rem; color:#F4F6FA; }.sidebar-brand .depto { color:#7B8AA3; font-size:.78rem; font-weight:500; }
-    @media (max-width: 700px) { [data-testid="stHorizontalBlock"] { flex-direction:column!important; } [data-testid="stHorizontalBlock"] > div { width:100%!important; min-width:100%!important; } .block-container { padding-left:.8rem!important; padding-right:.8rem!important; } }
+    .block-container { padding-top:.8rem!important; }
+    .compact-brand { display:flex; align-items:center; gap:10px; min-height:44px; }
+    .compact-brand .mini-badge { width:34px; height:34px; border-radius:9px; background:linear-gradient(135deg,#2563EB,#1D4ED8); color:#FFF; font-weight:800; display:flex; align-items:center; justify-content:center; }
+    .compact-brand .brand-title { font-weight:750; font-size:1rem; color:#F4F6FA; }
+    .compact-brand .brand-sub { color:#7B8AA3; font-size:.76rem; margin-top:-2px; }
+    .period-hero { text-align:center; padding:4px 0 6px; }
+    .period-hero .eyebrow { color:#64748B; font-size:.68rem; font-weight:800; letter-spacing:.12em; text-transform:uppercase; }
+    .period-hero .title { color:#F8FAFC; font-size:1.7rem; font-weight:800; letter-spacing:-.03em; line-height:1.15; }
+    .schedule-calendar-wrap { width:100%; overflow-x:auto; padding-bottom:6px; }
+    .schedule-calendar { min-width:980px; display:grid; grid-template-columns:repeat(7,minmax(0,1fr)); gap:7px; }
+    .cal-weekday { color:#64748B; font-size:.68rem; font-weight:800; letter-spacing:.08em; text-align:center; text-transform:uppercase; padding:5px 2px; }
+    .cal-day { background:#111A29; border:1px solid #1E2A3D; border-radius:10px; min-height:126px; padding:8px; }
+    .cal-day.today { border-color:#3B82F6; box-shadow:0 0 0 1px rgba(59,130,246,.25) inset; }
+    .cal-day.empty { background:rgba(17,26,41,.32); border-color:#172132; }
+    .cal-date { color:#E2E8F0; font-family:'JetBrains Mono',monospace; font-size:.77rem; font-weight:700; margin-bottom:6px; }
+    .shift-line { display:flex; align-items:center; gap:5px; min-height:28px; border-radius:6px; padding:4px 5px; margin:2px 0; background:#0D1420; border:1px solid #192438; overflow:hidden; }
+    .shift-line.selected { background:#172C50; border-color:#3B82F6; box-shadow:0 0 0 1px rgba(59,130,246,.18) inset; }
+    .shift-line .turn-dot { width:6px; height:6px; border-radius:50%; flex:0 0 6px; }
+    .turn-dot.manha { background:#F59E0B; }.turn-dot.tarde { background:#06B6D4; }.turn-dot.noite { background:#8B5CF6; }
+    .shift-line .turn-code { color:#64748B; font-size:.61rem; font-weight:800; width:13px; flex:0 0 13px; }
+    .shift-line .doctor { color:#DDE5F3; font-size:.72rem; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .shift-line.selected .doctor { color:#FFFFFF; font-weight:800; }
+    .month-summary { color:#7B8AA3; font-size:.82rem; margin:.15rem 0 .6rem; }
+    @media (max-width: 700px) { .block-container { padding-left:.65rem!important; padding-right:.65rem!important; } .schedule-calendar { min-width:900px; } .period-hero .title { font-size:1.45rem; } }
     </style>
     """, unsafe_allow_html=True)
 
@@ -617,7 +704,7 @@ if not st.session_state['auth']:
 # =================================================================
 # 7. DADOS GLOBAIS / PERÍODO
 # =================================================================
-df_docs = fetch_data("SELECT id, name, ativo FROM doctors ORDER BY ativo DESC, name")
+df_docs = fetch_doctors()
 df_docs['ativo'] = df_docs['ativo'].fillna(False).astype(bool) if not df_docs.empty else pd.Series(dtype=bool)
 active_names = df_docs[df_docs['ativo']]['name'].tolist() if not df_docs.empty else []
 all_names = df_docs['name'].tolist() if not df_docs.empty else []
@@ -631,18 +718,81 @@ if 'period_year' not in st.session_state:
     st.session_state['period_year'] = hoje.year
 if 'page' not in st.session_state:
     st.session_state['page'] = '📅 Escala'
+if 'scale_edit_mode' not in st.session_state:
+    st.session_state['scale_edit_mode'] = False
+if 'show_pattern_preview' not in st.session_state:
+    st.session_state['show_pattern_preview'] = False
+
+
+def _set_page(label):
+    st.session_state['page'] = label
+
+
+def _period_changed():
+    st.session_state['show_pattern_preview'] = False
+    st.session_state['scale_edit_mode'] = False
+
+
+def _shift_period(delta):
+    mes = int(st.session_state['period_month']) + int(delta)
+    ano_local = int(st.session_state['period_year'])
+    if mes < 1:
+        mes, ano_local = 12, ano_local - 1
+    elif mes > 12:
+        mes, ano_local = 1, ano_local + 1
+    st.session_state['period_month'] = mes
+    st.session_state['period_year'] = ano_local
+    _period_changed()
+
+
+def _ir_para_hoje():
+    st.session_state['period_month'] = hoje.month
+    st.session_state['period_year'] = hoje.year
+    _period_changed()
+
+
+def _toggle_scale_edit():
+    st.session_state['scale_edit_mode'] = not bool(st.session_state.get('scale_edit_mode', False))
+
+
+def _toggle_pattern_preview():
+    st.session_state['show_pattern_preview'] = not bool(st.session_state.get('show_pattern_preview', False))
+
+
+def render_period_selector():
+    """Seletor principal do período, visível nas telas mensais mesmo com a sidebar fechada."""
+    mes_atual = int(st.session_state['period_month'])
+    ano_atual = int(st.session_state['period_year'])
+    st.markdown(
+        f"<div class='period-hero'><div class='eyebrow'>Escala de referência</div>"
+        f"<div class='title'>{MESES[mes_atual-1]} {ano_atual}</div></div>",
+        unsafe_allow_html=True
+    )
+    years = list(range(hoje.year - 3, hoje.year + 5))
+    if ano_atual not in years:
+        years = sorted(set(years + [ano_atual]))
+    cprev, cmonth, cyear, ctoday, cnext = st.columns([1.15, 1.55, 1.0, .9, 1.15])
+    cprev.button("‹ Anterior", key=f"period_prev_{st.session_state['page']}", use_container_width=True, on_click=_shift_period, args=(-1,))
+    cmonth.selectbox("Mês", range(1, 13), format_func=lambda x: MESES[x-1], key='period_month', on_change=_period_changed)
+    cyear.selectbox("Ano", years, key='period_year', on_change=_period_changed)
+    ctoday.button("Hoje", key=f"period_today_{st.session_state['page']}", use_container_width=True, on_click=_ir_para_hoje)
+    cnext.button("Próximo ›", key=f"period_next_{st.session_state['page']}", use_container_width=True, on_click=_shift_period, args=(1,))
+
 
 # =================================================================
 # 8. SIDEBAR / NAVEGAÇÃO
 # =================================================================
 def nav_button(label, key):
     ativo = st.session_state['page'] == label
-    if st.sidebar.button(label, key=key, type='primary' if ativo else 'secondary', use_container_width=True):
-        st.session_state['page'] = label
-        st.rerun()
+    st.sidebar.button(
+        label, key=key, type='primary' if ativo else 'secondary', use_container_width=True,
+        on_click=_set_page, args=(label,)
+    )
+
 
 with st.sidebar:
     st.markdown("<div class='sidebar-brand'><div class='badge'>HH</div><div><div class='nome'>Hospital HELP</div><div class='depto'>Radiologia</div></div></div>", unsafe_allow_html=True)
+    st.caption("A sidebar fica recolhida por padrão; Escala e Trocas também permanecem acessíveis no topo.")
     st.divider()
 
 st.sidebar.markdown("<div class='nav-eyebrow'>Dia a dia</div>", unsafe_allow_html=True)
@@ -660,32 +810,23 @@ st.sidebar.markdown("<div class='nav-eyebrow'>Configurações</div>", unsafe_all
 nav_button('⚙️ Turnos e Valores', 'nav_turnos')
 nav_button('💾 Backup', 'nav_backup')
 
-st.sidebar.divider()
-st.sidebar.markdown("<div class='nav-eyebrow'>Período ativo</div>", unsafe_allow_html=True)
-years = list(range(hoje.year - 2, hoje.year + 4))
-if st.session_state['period_year'] not in years:
-    st.session_state['period_year'] = hoje.year
-cpm, cpy = st.sidebar.columns([1.3, 1])
-with cpm:
-    st.selectbox("Mês", range(1, 13), format_func=lambda x: MESES[x-1], key='period_month')
-with cpy:
-    st.selectbox("Ano", years, key='period_year')
-
-def _ir_para_hoje():
-    st.session_state['period_month'] = hoje.month
-    st.session_state['period_year'] = hoje.year
-
-st.sidebar.button("Hoje", use_container_width=True, on_click=_ir_para_hoje)
-
 mes_num = int(st.session_state['period_month'])
 ano = int(st.session_state['period_year'])
 mes_nome = MESES[mes_num - 1]
 page = st.session_state['page']
 
-st.markdown("<div class='help-header'><div class='badge'>HH</div><div class='titles'><h1>Gestão de Escala — Radiologia</h1><span>Hospital HELP</span></div></div>", unsafe_allow_html=True)
+# Cabeçalho compacto + ações essenciais sempre visíveis, independente da sidebar.
+hbrand, hscale, hswap = st.columns([6, 1.25, 1.25])
+with hbrand:
+    st.markdown("<div class='compact-brand'><div class='mini-badge'>HH</div><div><div class='brand-title'>Hospital HELP · Radiologia</div><div class='brand-sub'>Escala médica</div></div></div>", unsafe_allow_html=True)
+with hscale:
+    st.button("📅 Escala", key='top_nav_escala', type='primary' if page == '📅 Escala' else 'secondary', use_container_width=True, on_click=_set_page, args=('📅 Escala',))
+with hswap:
+    st.button("🔄 Trocas", key='top_nav_trocas', type='primary' if page == '🔄 Trocas' else 'secondary', use_container_width=True, on_click=_set_page, args=('🔄 Trocas',))
+st.divider()
 
 # =================================================================
-# 9. PDF — USA O ESTADO ATUAL DA TELA, NÃO APENAS O ÚLTIMO SALVO
+# 9. PDF OFICIAL — ESCALA SALVA + FECHAMENTO RH
 # =================================================================
 def generate_pdf_semanal(weeks, pivot, resumo, mes, ano, shift_types_df):
     pdf = FPDF(orientation='L', unit='mm', format='A4')
@@ -755,89 +896,99 @@ def generate_pdf_semanal(weeks, pivot, resumo, mes, ano, shift_types_df):
 # 10. PÁGINA — ESCALA
 # =================================================================
 if page == '📅 Escala':
-    st.header(f"📅 Escala · {mes_nome} {ano}")
+    render_period_selector()
+    # Releia o estado do período porque callbacks/selectboxes podem tê-lo alterado.
+    mes_num = int(st.session_state['period_month'])
+    ano = int(st.session_state['period_year'])
+    mes_nome = MESES[mes_num - 1]
+
     df_raw = fetch_month_schedule(ano, mes_num)
     df_pivot = schedule_to_pivot(df_raw, ano, mes_num)
-    shift_types_df = get_shift_types()
-
     dias_mes = calendar.monthrange(ano, mes_num)[1]
     total_slots = dias_mes * len(TURNOS)
     filled = len(df_raw)
+
+    # Ações do médico ficam antes do calendário. Trocas permanece visível mesmo sem sidebar.
+    cdoc, ctroca = st.columns([5.2, 1.5])
+    with cdoc:
+        medico_alvo = st.selectbox("🔎 Destacar médico na escala", [""] + all_names, key='medico_alvo_escala')
+    with ctroca:
+        st.write("")
+        st.button("🔄 Trocas", key='escala_trocas_top', type='primary', use_container_width=True, on_click=_set_page, args=('🔄 Trocas',))
+
+    if medico_alvo:
+        df_pessoal = df_raw[df_raw['doctor_name'] == medico_alvo].copy().sort_values('shift_date')
+        ci, cics = st.columns([4.5, 2.2])
+        with ci:
+            if df_pessoal.empty:
+                st.caption(f"{medico_alvo}: nenhum plantão em {mes_nome}/{ano}.")
+            else:
+                st.markdown(f"<div class='month-summary'><b>{html.escape(medico_alvo)}</b> · {len(df_pessoal)} plantão(ões) no mês. Os plantões estão destacados em azul.</div>", unsafe_allow_html=True)
+        with cics:
+            if not df_pessoal.empty:
+                shift_types_df_ics = get_shift_types()
+                ics_bytes = generate_ics(df_pessoal, medico_alvo, shift_types_df_ics)
+                st.download_button(
+                    "📅 Adicionar ao meu calendário (.ics)", data=ics_bytes,
+                    file_name=f"Plantões_{medico_alvo}_{mes_nome}_{ano}.ics", mime="text/calendar",
+                    use_container_width=True
+                )
+
+    # O calendário é o conteúdo principal e aparece antes de métricas/ferramentas administrativas.
+    st.markdown("<div class='turno-legend'><div class='item'><span class='dot dot-manha'></span>Manhã</div><div class='item'><span class='dot dot-tarde'></span>Tarde</div><div class='item'><span class='dot dot-noite'></span>Noite</div></div>", unsafe_allow_html=True)
+    render_schedule_calendar(df_pivot, ano, mes_num, medico_alvo)
+
+    st.markdown("### Resumo do mês")
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Turnos cobertos", f"{filled}/{total_slots}")
     c2.metric("Sem médico", max(total_slots - filled, 0))
     c3.metric("Médicos escalados", df_raw['doctor_id'].nunique() if not df_raw.empty else 0)
     c4.metric("Cobertura", f"{(filled / total_slots * 100):.0f}%" if total_slots else "0%")
 
-    c_reset, c_spacer = st.columns([2.6, 5])
-    with c_reset:
-        with st.popover("✨ Aplicar Padrão Rotativo", use_container_width=True):
-            anchor = get_rotation_anchor()
-            df_fix = fetch_data("""
-                SELECT f.week_num, f.weekday, f.shift_time, f.doctor_id, COALESCE(d.name, f.doctor_name) AS doctor_name
-                FROM fixed_schedule_4w f LEFT JOIN doctors d ON d.id=f.doctor_id
-                WHERE f.doctor_id IS NOT NULL
-            """)
-            desired = build_pattern_assignments(ano, mes_num, df_fix, anchor)
-            current_map = {(pd.Timestamp(r['shift_date']).date(), r['shift_time']): r['doctor_name'] for _, r in df_raw.iterrows()}
-            desired_map = {(r[0], r[1]): r[3] for r in desired}
-            all_keys = set(current_map) | set(desired_map)
-            iguais = sum(1 for k in all_keys if current_map.get(k) == desired_map.get(k) and current_map.get(k) is not None)
-            alterados = sum(1 for k in all_keys if current_map.get(k) and desired_map.get(k) and current_map.get(k) != desired_map.get(k))
-            novos = sum(1 for k in all_keys if not current_map.get(k) and desired_map.get(k))
-            apagados = sum(1 for k in all_keys if current_map.get(k) and not desired_map.get(k))
-            st.caption(f"Ciclo ancorado em {anchor.strftime('%d/%m/%Y')} (Semana 1).")
-            p1, p2 = st.columns(2); p1.metric("Mantidos", iguais); p2.metric("Alterados", alterados)
-            p3, p4 = st.columns(2); p3.metric("Novos", novos); p4.metric("Ficarão vazios", apagados)
-            if alterados or apagados:
-                st.warning("Edições manuais divergentes do padrão serão substituídas.")
-            trava = st.checkbox("Estou ciente. Substituir a escala deste mês pelo padrão.")
-            if st.button("Aplicar padrão ao mês", type="primary", use_container_width=True, disabled=not trava):
-                rows = [(dt, turno, did, nome) for dt, turno, did, nome in desired]
-                execute_transacional([
-                    ("DELETE FROM shift_schedule WHERE shift_date >= %s AND shift_date < %s", month_bounds(ano, mes_num)),
-                    ("INSERT INTO shift_schedule (shift_date, shift_time, doctor_id, doctor_name) VALUES %s", rows),
-                ])
-                st.rerun()
+    # Ferramentas administrativas ficam depois da escala e só carregam conteúdo pesado quando abertas.
+    cpattern, cedit = st.columns([2.2, 2.2])
+    cpattern.button(
+        "✨ Aplicar Padrão Rotativo" if not st.session_state['show_pattern_preview'] else "✕ Fechar prévia do padrão",
+        key='toggle_pattern_preview_btn', use_container_width=True, on_click=_toggle_pattern_preview
+    )
+    cedit.button(
+        "✏️ Editar escala" if not st.session_state['scale_edit_mode'] else "👁️ Voltar à visualização",
+        key='toggle_scale_edit_btn', use_container_width=True, on_click=_toggle_scale_edit
+    )
 
-    st.divider()
-    medico_alvo = st.selectbox("👤 Ver escala individual", [""] + all_names, key='medico_alvo_escala')
-    if medico_alvo:
-        df_pessoal = df_raw[df_raw['doctor_name'] == medico_alvo].copy()
-        if df_pessoal.empty:
-            st.info(f"Nenhum plantão encontrado para {medico_alvo} neste mês.")
-        else:
-            df_pessoal = df_pessoal.sort_values('shift_date')
-            df_view = df_pessoal.copy()
-            df_view['Data'] = df_view['shift_date'].apply(lambda d: f"{DIAS_SEMANA_CURTO[pd.Timestamp(d).weekday()]} {pd.Timestamp(d).strftime('%d/%m')}")
-            df_view['Turno'] = df_view['shift_time'].map({'Manhã':'🌅 Manhã','Tarde':'☀️ Tarde','Noite':'🌙 Noite'})
-            st.dataframe(df_view[['Data', 'Turno']], use_container_width=True, hide_index=True)
-            ics_bytes = generate_ics(df_pessoal, medico_alvo, shift_types_df)
-            st.download_button("📅 Adicionar meus plantões ao calendário (.ics)", data=ics_bytes,
-                               file_name=f"Plantões_{medico_alvo}_{mes_nome}_{ano}.ics", mime="text/calendar", use_container_width=True)
-        st.divider()
+    if st.session_state['show_pattern_preview']:
+        st.subheader("Prévia do padrão rotativo")
+        anchor = get_rotation_anchor()
+        df_fix = fetch_fixed_pattern()
+        desired = build_pattern_assignments(ano, mes_num, df_fix, anchor)
+        current_map = {(pd.Timestamp(r['shift_date']).date(), r['shift_time']): r['doctor_name'] for _, r in df_raw.iterrows()}
+        desired_map = {(r[0], r[1]): r[3] for r in desired}
+        all_keys = set(current_map) | set(desired_map)
+        iguais = sum(1 for k in all_keys if current_map.get(k) == desired_map.get(k) and current_map.get(k) is not None)
+        alterados = sum(1 for k in all_keys if current_map.get(k) and desired_map.get(k) and current_map.get(k) != desired_map.get(k))
+        novos = sum(1 for k in all_keys if not current_map.get(k) and desired_map.get(k))
+        apagados = sum(1 for k in all_keys if current_map.get(k) and not desired_map.get(k))
+        st.caption(f"Ciclo ancorado em {anchor.strftime('%d/%m/%Y')} (Semana 1).")
+        p1, p2, p3, p4 = st.columns(4)
+        p1.metric("Mantidos", iguais); p2.metric("Alterados", alterados); p3.metric("Novos", novos); p4.metric("Ficarão vazios", apagados)
+        if alterados or apagados:
+            st.warning("Edições manuais divergentes do padrão serão substituídas.")
+        trava = st.checkbox("Estou ciente. Substituir a escala deste mês pelo padrão.", key='confirm_apply_pattern')
+        if st.button("Aplicar padrão ao mês", type="primary", use_container_width=True, disabled=not trava, key='apply_pattern_month'):
+            rows = [(dt, turno, did, nome) for dt, turno, did, nome in desired]
+            ini, fim = month_bounds(ano, mes_num)
+            execute_transacional([
+                ("DELETE FROM shift_schedule WHERE shift_date >= %s AND shift_date < %s", (ini, fim)),
+                ("INSERT INTO shift_schedule (shift_date, shift_time, doctor_id, doctor_name) VALUES %s", rows),
+            ])
+            st.session_state['show_pattern_preview'] = False
+            st.rerun()
 
-    modo = st.radio("Modo", ["👁️ Visualizar", "✏️ Editar"], horizontal=True, label_visibility='collapsed')
-    calendar.setfirstweekday(calendar.MONDAY)
-    weeks = calendar.monthcalendar(ano, mes_num)
-
-    st.markdown("<div class='turno-legend'><div class='item'><span class='dot dot-manha'></span>Manhã</div><div class='item'><span class='dot dot-tarde'></span>Tarde</div><div class='item'><span class='dot dot-noite'></span>Noite</div></div>", unsafe_allow_html=True)
-
-    current_rows_for_export = []
-    current_pivot_for_export = df_pivot.copy()
-
-    if modo == "👁️ Visualizar":
-        for i, week in enumerate(weeks):
-            st.markdown(f"#### Semana {i+1}")
-            data = {'Turno': ['🌅 Manhã', '☀️ Tarde', '🌙 Noite']}
-            for idx, day in enumerate(week):
-                col = DIAS_SEMANA_CURTO[idx] if day == 0 else f"{DIAS_SEMANA_CURTO[idx]} {day:02d}"
-                data[col] = ['—','—','—'] if day == 0 else [df_pivot.at[t, day] or '—' for t in TURNOS]
-            st.dataframe(pd.DataFrame(data), use_container_width=True, hide_index=True)
-        for _, r in df_raw.iterrows():
-            current_rows_for_export.append((pd.Timestamp(r['shift_date']).date(), r['shift_time'], r['doctor_name']))
-    else:
-        # Opções incluem ativos + qualquer médico já presente no mês (mesmo inativo), preservando histórico editável.
+    if st.session_state['scale_edit_mode']:
+        st.subheader("✏️ Edição da escala mensal")
+        st.caption("A edição completa só é carregada quando necessária; a visualização normal permanece leve para os médicos.")
+        calendar.setfirstweekday(calendar.MONDAY)
+        weeks = calendar.monthcalendar(ano, mes_num)
         existing_names = df_raw['doctor_name'].dropna().unique().tolist() if not df_raw.empty else []
         editor_options = [""] + sorted(set(active_names + existing_names))
         all_edits = []
@@ -849,48 +1000,30 @@ if page == '📅 Escala':
             config = {'Turno': st.column_config.TextColumn('Turno', disabled=True, width='small')}
             for idx, day in enumerate(week):
                 key = f"w{i}_d{idx}"
-                config[key] = (st.column_config.TextColumn(DIAS_SEMANA_CURTO[idx], disabled=True, width='small') if day == 0
-                               else st.column_config.SelectboxColumn(f"{DIAS_SEMANA_CURTO[idx]} {day:02d}", options=editor_options, width='small'))
-            ed = st.data_editor(df_w, column_config=config, hide_index=True, use_container_width=True, key=f"edit_month_w{i}")
+                config[key] = (
+                    st.column_config.TextColumn(DIAS_SEMANA_CURTO[idx], disabled=True, width='small') if day == 0
+                    else st.column_config.SelectboxColumn(f"{DIAS_SEMANA_CURTO[idx]} {day:02d}", options=editor_options, width='small')
+                )
+            ed = st.data_editor(df_w, column_config=config, hide_index=True, use_container_width=True, key=f"edit_month_w{i}_{ano}_{mes_num}")
             all_edits.append((week, ed))
 
-        current_rows_for_export = current_state_from_edits(all_edits, ano, mes_num)
-        current_pivot_for_export = pd.DataFrame("", index=TURNOS, columns=range(1, dias_mes + 1))
-        for dt, turno, nome in current_rows_for_export:
-            current_pivot_for_export.at[turno, dt.day] = nome
-
-        if st.button("💾 Salvar escala deste mês", type="primary", use_container_width=True):
+        current_rows = current_state_from_edits(all_edits, ano, mes_num)
+        if st.button("💾 Salvar escala deste mês", type="primary", use_container_width=True, key='save_month_schedule'):
             rows = []
-            for dt, turno, nome in current_rows_for_export:
+            for dt, turno, nome in current_rows:
                 did = id_by_name.get(nome)
                 if did is None:
                     st.error(f"Médico não encontrado: {nome}")
                     st.stop()
                 rows.append((dt, turno, did, nome))
             ini, fim = month_bounds(ano, mes_num)
-            # O estado COMPLETO da grade substitui o mês. Células apagadas viram DELETE de verdade.
             execute_transacional([
                 ("DELETE FROM shift_schedule WHERE shift_date >= %s AND shift_date < %s", (ini, fim)),
                 ("INSERT INTO shift_schedule (shift_date, shift_time, doctor_id, doctor_name) VALUES %s", rows),
             ])
+            st.session_state['scale_edit_mode'] = False
             st.success("Escala salva!")
             st.rerun()
-
-    st.divider()
-    resumo_atual = financial_summary_from_rows(current_rows_for_export, shift_types_df)
-    cpdf1, cpdf2 = st.columns(2)
-    with cpdf1:
-        if current_rows_for_export:
-            pdf_bytes = generate_pdf_semanal(weeks, current_pivot_for_export, resumo_atual, mes_nome, ano, shift_types_df)
-            st.download_button("📄 Relatório completo da escala atual (PDF)", data=pdf_bytes,
-                               file_name=f"Escala_{mes_nome}_{ano}.pdf", mime="application/pdf", use_container_width=True)
-        else:
-            st.caption("Sem escala para gerar PDF.")
-    with cpdf2:
-        if not df_raw.empty:
-            export_csv = df_raw[['shift_date','shift_time','doctor_name']].to_csv(index=False).encode('utf-8')
-            st.download_button("📥 Exportar escala do mês (CSV)", data=export_csv,
-                               file_name=f"Escala_{mes_nome}_{ano}.csv", mime='text/csv', use_container_width=True)
 
 # =================================================================
 # 11. PÁGINA — PADRÃO ROTATIVO CONTÍNUO
@@ -909,10 +1042,7 @@ elif page == '🔁 Padrão Rotativo':
         st.rerun()
 
     st.divider()
-    df_fix_raw = fetch_data("""
-        SELECT f.week_num, f.weekday, f.shift_time, f.doctor_id, COALESCE(d.name, f.doctor_name) AS doctor_name
-        FROM fixed_schedule_4w f LEFT JOIN doctors d ON d.id=f.doctor_id
-    """)
+    df_fix_raw = fetch_fixed_pattern()
     existing_pattern_names = df_fix_raw['doctor_name'].dropna().unique().tolist() if not df_fix_raw.empty else []
     pattern_options = [""] + sorted(set(active_names + existing_pattern_names))
     edits = []
@@ -1042,7 +1172,12 @@ elif page == '⚙️ Turnos e Valores':
 # 14. PÁGINA — FECHAMENTO RH
 # =================================================================
 elif page == '💰 Fechamento RH':
+    render_period_selector()
+    mes_num = int(st.session_state['period_month'])
+    ano = int(st.session_state['period_year'])
+    mes_nome = MESES[mes_num - 1]
     st.header(f"💰 Fechamento RH · {mes_nome} {ano}")
+
     df_raw = fetch_month_schedule(ano, mes_num)
     shift_types_df = get_shift_types()
     rows = [(pd.Timestamp(r['shift_date']).date(), r['shift_time'], r['doctor_name']) for _, r in df_raw.iterrows()]
@@ -1052,19 +1187,47 @@ elif page == '💰 Fechamento RH':
     c1.metric("Custo da escala", f"R$ {total:,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.'))
     c2.metric("Plantões", len(rows))
     c3.metric("Médicos", resumo['doctor_name'].nunique() if not resumo.empty else 0)
+
     if resumo.empty:
         st.info("Sem plantões no período.")
     else:
         display = resumo.rename(columns={'doctor_name':'Médico', 'Total_Plantões':'Plantões', 'Total':'Total (R$)'})
-        st.dataframe(display, hide_index=True, use_container_width=True,
-                     column_config={'Total (R$)': st.column_config.NumberColumn(format='R$ %.2f')})
-        st.download_button("📥 Exportar fechamento (CSV)", data=display.to_csv(index=False).encode('utf-8'),
-                           file_name=f"Fechamento_RH_{mes_nome}_{ano}.csv", mime='text/csv')
+        st.dataframe(
+            display, hide_index=True, use_container_width=True,
+            column_config={'Total (R$)': st.column_config.NumberColumn(format='R$ %.2f')}
+        )
+
+        st.divider()
+        st.subheader("📄 Relatório oficial")
+        st.caption("Um único PDF com a escala mensal completa e, em seguida, o fechamento financeiro do RH. Não há exportação CSV para usuários.")
+        schedule_sig = df_raw[['shift_date','shift_time','doctor_name']].astype(str).to_csv(index=False) if not df_raw.empty else ''
+        shift_sig = shift_types_df[['name','start_time','end_time','value']].astype(str).to_csv(index=False) if not shift_types_df.empty else ''
+        report_key = hashlib.sha1(f"{ano}-{mes_num}|{schedule_sig}|{shift_sig}".encode('utf-8')).hexdigest()
+        if st.session_state.get('rh_pdf_key') != report_key:
+            st.session_state.pop('rh_pdf_bytes', None)
+            st.session_state['rh_pdf_key'] = report_key
+
+        if st.button("📄 Preparar PDF do Fechamento RH", type='primary', use_container_width=True, key='prepare_rh_pdf'):
+            calendar.setfirstweekday(calendar.MONDAY)
+            weeks = calendar.monthcalendar(ano, mes_num)
+            pivot = schedule_to_pivot(df_raw, ano, mes_num)
+            st.session_state['rh_pdf_bytes'] = generate_pdf_semanal(weeks, pivot, resumo, mes_nome, ano, shift_types_df)
+
+        if st.session_state.get('rh_pdf_bytes'):
+            st.download_button(
+                "⬇️ Baixar PDF oficial", data=st.session_state['rh_pdf_bytes'],
+                file_name=f"Fechamento_RH_Escala_{mes_nome}_{ano}.pdf", mime='application/pdf',
+                use_container_width=True
+            )
 
 # =================================================================
 # 15. PÁGINA — TROCAS DE PLANTÃO (SEM WORKFLOW DE APROVAÇÃO/AUDITORIA)
 # =================================================================
 elif page == '🔄 Trocas':
+    render_period_selector()
+    mes_num = int(st.session_state['period_month'])
+    ano = int(st.session_state['period_year'])
+    mes_nome = MESES[mes_num - 1]
     st.header(f"🔄 Trocas de plantão · {mes_nome} {ano}")
     st.caption("Ferramenta operacional para trocar dois plantões já escalados ou substituir o médico de um plantão.")
     df_raw = fetch_month_schedule(ano, mes_num)
