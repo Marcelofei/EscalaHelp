@@ -469,8 +469,98 @@ def claim_shift_atomic(shift_date, shift_time, doctor_id, doctor_name):
     return result
 
 
+def replace_occupied_shift_atomic(shift_date, shift_time, expected_owner_id, expected_owner_name, doctor_id, doctor_name):
+    """Substitui o ocupante de um plantão apenas se ele ainda for o esperado."""
+    def _replace(conn):
+        with conn.cursor() as cur:
+            if expected_owner_id is not None and not pd.isna(expected_owner_id):
+                cur.execute(
+                    """
+                    UPDATE shift_schedule
+                    SET doctor_id=%s, doctor_name=%s
+                    WHERE shift_date=%s AND shift_time=%s AND doctor_id=%s
+                    RETURNING doctor_id;
+                    """,
+                    (int(doctor_id), doctor_name, shift_date, shift_time, int(expected_owner_id)),
+                )
+            else:
+                cur.execute(
+                    """
+                    UPDATE shift_schedule
+                    SET doctor_id=%s, doctor_name=%s
+                    WHERE shift_date=%s AND shift_time=%s AND doctor_id IS NULL AND doctor_name=%s
+                    RETURNING doctor_id;
+                    """,
+                    (int(doctor_id), doctor_name, shift_date, shift_time, expected_owner_name),
+                )
+            if cur.fetchone():
+                return True, doctor_name
+
+            cur.execute(
+                """
+                SELECT COALESCE(d.name, s.doctor_name)
+                FROM shift_schedule s
+                LEFT JOIN doctors d ON d.id=s.doctor_id
+                WHERE s.shift_date=%s AND s.shift_time=%s;
+                """,
+                (shift_date, shift_time),
+            )
+            row = cur.fetchone()
+            return False, (row[0] if row else "vaga já alterada")
+
+    result = _with_connection(_replace, transactional=True)
+    fetch_month_schedule.clear()
+    return result
+
+
+def swap_with_my_shift_atomic(target_date, target_time, target_owner_id, my_date, my_time, my_doctor_id):
+    """Troca dois plantões com travamento das duas linhas para evitar corrida entre usuários."""
+    def _swap(conn):
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT shift_date, shift_time, doctor_id, doctor_name
+                FROM shift_schedule
+                WHERE (shift_date=%s AND shift_time=%s)
+                   OR (shift_date=%s AND shift_time=%s)
+                FOR UPDATE;
+                """,
+                (target_date, target_time, my_date, my_time),
+            )
+            rows = cur.fetchall()
+            state = {(r[0], r[1]): (r[2], r[3]) for r in rows}
+            target = state.get((target_date, target_time))
+            mine = state.get((my_date, my_time))
+            if not target or not mine:
+                return False, "Um dos plantões foi alterado antes da confirmação."
+
+            current_target_id = target[0]
+            current_my_id = mine[0]
+            if target_owner_id is not None and not pd.isna(target_owner_id):
+                if current_target_id != int(target_owner_id):
+                    return False, "O plantão escolhido mudou de médico."
+            if current_my_id != int(my_doctor_id):
+                return False, "Seu plantão escolhido mudou antes da troca."
+
+            target_id, target_name = target
+            my_id, my_name = mine
+            cur.execute(
+                "UPDATE shift_schedule SET doctor_id=%s, doctor_name=%s WHERE shift_date=%s AND shift_time=%s",
+                (my_id, my_name, target_date, target_time),
+            )
+            cur.execute(
+                "UPDATE shift_schedule SET doctor_id=%s, doctor_name=%s WHERE shift_date=%s AND shift_time=%s",
+                (target_id, target_name, my_date, my_time),
+            )
+            return True, "Troca realizada."
+
+    result = _with_connection(_swap, transactional=True)
+    fetch_month_schedule.clear()
+    return result
+
+
 def render_quick_claim_calendar(df_raw, ano, mes, doctor_name, doctor_id):
-    """Calendário operacional: turno vazio vira um botão de um clique para o médico."""
+    """Calendário operacional: assumir vagas e interagir diretamente com plantões ocupados."""
     calendar.setfirstweekday(calendar.MONDAY)
     weeks = calendar.monthcalendar(ano, mes)
     hoje_local = datetime.date.today()
@@ -478,49 +568,114 @@ def render_quick_claim_calendar(df_raw, ano, mes, doctor_name, doctor_id):
     if not df_raw.empty:
         for _, r in df_raw.iterrows():
             dt = pd.Timestamp(r['shift_date']).date()
-            occupied[(dt, r['shift_time'])] = str(r['doctor_name'])
+            rid = None if pd.isna(r.get('doctor_id')) else int(r['doctor_id'])
+            occupied[(dt, r['shift_time'])] = {
+                'name': str(r['doctor_name']),
+                'id': rid,
+            }
+
+    meus = []
+    if not df_raw.empty:
+        for _, r in df_raw[df_raw['doctor_name'] == doctor_name].sort_values(['shift_date', 'shift_time']).iterrows():
+            d = pd.Timestamp(r['shift_date']).date()
+            meus.append((d, str(r['shift_time'])))
 
     emoji_turno = {'Manhã': '🌅', 'Tarde': '☀️', 'Noite': '🌙'}
-    st.caption("Toque em **+ Assumir** no turno vazio. A vaga é gravada imediatamente — sem botão Salvar.")
+    st.caption("Toque em **+ Assumir** nas vagas. Toque no **nome de outro médico** para assumir ou trocar.")
 
     for week_idx, week in enumerate(weeks):
-        cols = st.columns(7)
+        cols = st.columns(7, gap="small")
         for wd, day in enumerate(week):
             with cols[wd]:
-                if day == 0:
-                    st.markdown("<div style='height:190px;opacity:.18;border:1px solid #172132;border-radius:10px;'></div>", unsafe_allow_html=True)
-                    continue
+                # Cada data vira uma célula visualmente delimitada, formando uma grade clara.
+                with st.container(border=True):
+                    if day == 0:
+                        st.markdown("<div style='height:176px;opacity:.10;'></div>", unsafe_allow_html=True)
+                        continue
 
-                dt = datetime.date(ano, mes, day)
-                hoje_badge = " · **Hoje**" if dt == hoje_local else ""
-                st.markdown(f"**{DIAS_SEMANA_CURTO[wd]} {day:02d}**{hoje_badge}")
-                for turno in TURNOS:
-                    atual = occupied.get((dt, turno), "")
-                    emoji = emoji_turno[turno]
-                    if atual:
-                        if atual == doctor_name:
-                            st.markdown(f"{emoji} **✓ Você**")
-                        else:
-                            st.markdown(f"{emoji} {html.escape(atual)}")
-                    else:
-                        if st.button(
-                            f"＋ {turno}",
-                            key=f"claim_{ano}_{mes}_{day}_{turno}_{doctor_id}",
-                            use_container_width=True,
-                            help=f"Assumir {turno.lower()} de {day:02d}/{mes:02d}",
-                        ):
-                            ok, owner = claim_shift_atomic(dt, turno, doctor_id, doctor_name)
-                            if ok:
-                                st.session_state['claim_flash'] = (
-                                    'success',
-                                    f"{doctor_name}: {turno.lower()} de {day:02d}/{mes:02d} assumido com sucesso."
-                                )
+                    dt = datetime.date(ano, mes, day)
+                    hoje_badge = " · **Hoje**" if dt == hoje_local else ""
+                    st.markdown(f"**{DIAS_SEMANA_CURTO[wd]} {day:02d}**{hoje_badge}")
+                    for turno in TURNOS:
+                        info = occupied.get((dt, turno))
+                        emoji = emoji_turno[turno]
+                        if info:
+                            atual = info['name']
+                            atual_id = info['id']
+                            if atual == doctor_name:
+                                st.markdown(f"{emoji} **✓ Você**")
                             else:
-                                st.session_state['claim_flash'] = (
-                                    'warning',
-                                    f"Esse turno acabou de ser assumido por {owner}."
-                                )
-                            st.rerun()
+                                # O próprio nome do ocupante vira o ponto de entrada para ações rápidas.
+                                with st.popover(f"{emoji} {atual}", use_container_width=True):
+                                    st.caption(f"{turno} · {day:02d}/{mes:02d} · atualmente com **{atual}**")
+                                    if st.button(
+                                        "✋ Assumir este plantão",
+                                        key=f"takeover_{ano}_{mes}_{day}_{turno}_{doctor_id}",
+                                        type="primary",
+                                        use_container_width=True,
+                                        help=f"Substitui {atual} por {doctor_name} neste plantão.",
+                                    ):
+                                        ok, owner = replace_occupied_shift_atomic(
+                                            dt, turno, atual_id, atual, doctor_id, doctor_name
+                                        )
+                                        if ok:
+                                            st.session_state['claim_flash'] = (
+                                                'success',
+                                                f"Você assumiu {turno.lower()} de {day:02d}/{mes:02d} no lugar de {atual}."
+                                            )
+                                        else:
+                                            st.session_state['claim_flash'] = (
+                                                'warning',
+                                                f"Não foi possível assumir: o plantão agora está com {owner}."
+                                            )
+                                        st.rerun()
+
+                                    opcoes_meus = [x for x in meus if x != (dt, turno)]
+                                    if opcoes_meus:
+                                        labels = {
+                                            x: f"{x[0].strftime('%d/%m')} · {x[1]}"
+                                            for x in opcoes_meus
+                                        }
+                                        meu_escolhido = st.selectbox(
+                                            "Trocar com um plantão meu",
+                                            opcoes_meus,
+                                            format_func=lambda x: labels[x],
+                                            key=f"swap_pick_{ano}_{mes}_{day}_{turno}_{doctor_id}",
+                                        )
+                                        if st.button(
+                                            "🔄 Confirmar troca",
+                                            key=f"swap_inline_{ano}_{mes}_{day}_{turno}_{doctor_id}",
+                                            use_container_width=True,
+                                        ):
+                                            ok, msg = swap_with_my_shift_atomic(
+                                                dt, turno, atual_id,
+                                                meu_escolhido[0], meu_escolhido[1], doctor_id,
+                                            )
+                                            st.session_state['claim_flash'] = (
+                                                'success' if ok else 'warning', msg
+                                            )
+                                            st.rerun()
+                                    else:
+                                        st.caption("Você ainda não tem outro plantão neste mês para fazer uma troca direta.")
+                        else:
+                            if st.button(
+                                f"＋ {turno}",
+                                key=f"claim_{ano}_{mes}_{day}_{turno}_{doctor_id}",
+                                use_container_width=True,
+                                help=f"Assumir {turno.lower()} de {day:02d}/{mes:02d}",
+                            ):
+                                ok, owner = claim_shift_atomic(dt, turno, doctor_id, doctor_name)
+                                if ok:
+                                    st.session_state['claim_flash'] = (
+                                        'success',
+                                        f"{doctor_name}: {turno.lower()} de {day:02d}/{mes:02d} assumido com sucesso."
+                                    )
+                                else:
+                                    st.session_state['claim_flash'] = (
+                                        'warning',
+                                        f"Esse turno acabou de ser assumido por {owner}."
+                                    )
+                                st.rerun()
 def current_state_from_edits(all_edits, ano, mes):
     rows = []
     for week_idx, (w_days, ed) in enumerate(all_edits):
