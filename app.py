@@ -594,8 +594,18 @@ def render_quick_claim_calendar(df_raw, ano, mes, doctor_name, doctor_id):
                         continue
 
                     dt = datetime.date(ano, mes, day)
+                    day_has_self = any(
+                        occupied.get((dt, turno), {}).get('name') == doctor_name
+                        for turno in TURNOS
+                    )
+                    if day_has_self:
+                        # Marcador usado pelo CSS para destacar a caixa inteira do dia.
+                        st.markdown("<span class='self-day-anchor'></span>", unsafe_allow_html=True)
+
                     hoje_badge = " · **Hoje**" if dt == hoje_local else ""
                     st.markdown(f"**{DIAS_SEMANA_CURTO[wd]} {day:02d}**{hoje_badge}")
+                    if day_has_self:
+                        st.markdown("<span class='self-day-badge'>✓ Você está neste dia</span>", unsafe_allow_html=True)
                     for turno in TURNOS:
                         info = occupied.get((dt, turno))
                         emoji = emoji_turno[turno]
@@ -603,7 +613,17 @@ def render_quick_claim_calendar(df_raw, ano, mes, doctor_name, doctor_id):
                             atual = info['name']
                             atual_id = info['id']
                             if atual == doctor_name:
-                                st.markdown(f"{emoji} **✓ Você**")
+                                st.markdown(
+                                    f"""
+                                    <div class="quick-self-slot">
+                                        <span class="self-emoji">{emoji}</span>
+                                        <span class="self-check">✓</span>
+                                        <span class="self-label">Você</span>
+                                        <span class="self-hint">seu plantão</span>
+                                    </div>
+                                    """,
+                                    unsafe_allow_html=True,
+                                )
                             else:
                                 # O próprio nome do ocupante vira o ponto de entrada para ações rápidas.
                                 with st.popover(f"{emoji} {atual}", use_container_width=True):
@@ -918,6 +938,38 @@ def aplicar_estilo_visual():
     .shift-line .turn-code { color:#64748B; font-size:.61rem; font-weight:800; width:13px; flex:0 0 13px; }
     .shift-line .doctor { color:#DDE5F3; font-size:.72rem; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     .shift-line.selected .doctor { color:#FFFFFF; font-weight:800; }
+
+    /* Destaque operacional do próprio médico no calendário rápido.
+       O marcador invisível dentro do dia permite realçar a célula inteira via :has(). */
+    .self-day-anchor { display:none; }
+    div[data-testid="stVerticalBlockBorderWrapper"]:has(.self-day-anchor) {
+        border-color:#3B82F6!important;
+        background:linear-gradient(180deg,rgba(37,99,235,.095),rgba(17,26,41,.96))!important;
+        box-shadow:0 0 0 1px rgba(59,130,246,.18), 0 7px 18px rgba(37,99,235,.08)!important;
+    }
+    div[data-testid="stVerticalBlockBorderWrapper"]:has(.self-day-anchor):hover {
+        border-color:#60A5FA!important;
+        box-shadow:0 0 0 1px rgba(96,165,250,.28), 0 8px 22px rgba(37,99,235,.12)!important;
+    }
+    .quick-self-slot {
+        display:flex; align-items:center; gap:7px; width:100%; box-sizing:border-box;
+        min-height:38px; margin:5px 0; padding:7px 9px; border-radius:9px;
+        background:linear-gradient(135deg,rgba(37,99,235,.30),rgba(29,78,216,.18));
+        border:1px solid #3B82F6; border-left:3px solid #60A5FA;
+        box-shadow:0 0 0 1px rgba(59,130,246,.08) inset, 0 3px 10px rgba(37,99,235,.13);
+    }
+    .quick-self-slot .self-emoji { flex:0 0 auto; }
+    .quick-self-slot .self-check {
+        display:inline-flex; align-items:center; justify-content:center; width:18px; height:18px;
+        border-radius:50%; background:#3B82F6; color:#FFF; font-size:.72rem; font-weight:900; flex:0 0 18px;
+    }
+    .quick-self-slot .self-label { color:#F8FBFF; font-weight:800; font-size:.88rem; letter-spacing:.01em; }
+    .quick-self-slot .self-hint { margin-left:auto; color:#93C5FD; font-size:.62rem; font-weight:800; text-transform:uppercase; letter-spacing:.06em; }
+    .self-day-badge {
+        display:inline-flex; align-items:center; gap:4px; margin:0 0 3px 0; padding:2px 6px;
+        border-radius:999px; background:rgba(59,130,246,.14); border:1px solid rgba(96,165,250,.28);
+        color:#93C5FD; font-size:.59rem; font-weight:800; text-transform:uppercase; letter-spacing:.06em;
+    }
     .month-summary { color:#7B8AA3; font-size:.82rem; margin:.15rem 0 .6rem; }
     @media (max-width: 700px) { .block-container { padding-left:.65rem!important; padding-right:.65rem!important; } .schedule-calendar { min-width:900px; } .period-hero .title { font-size:1.45rem; } }
     </style>
