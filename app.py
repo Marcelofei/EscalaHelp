@@ -429,6 +429,98 @@ def render_schedule_calendar(pivot, ano, mes, medico_alvo=""):
     st.markdown("".join(parts), unsafe_allow_html=True)
 
 
+
+def claim_shift_atomic(shift_date, shift_time, doctor_id, doctor_name):
+    """Assume um turno vazio de forma atômica.
+
+    ON CONFLICT DO NOTHING impede que dois médicos assumam o mesmo turno ao mesmo
+    tempo. Retorna (True, nome) quando a vaga foi assumida e (False, ocupante)
+    quando outro usuário chegou primeiro.
+    """
+    def _claim(conn):
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO shift_schedule (shift_date, shift_time, doctor_id, doctor_name)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (shift_date, shift_time) DO NOTHING
+                RETURNING doctor_id;
+                """,
+                (shift_date, shift_time, int(doctor_id), doctor_name),
+            )
+            inserted = cur.fetchone()
+            if inserted:
+                return True, doctor_name
+
+            cur.execute(
+                """
+                SELECT COALESCE(d.name, s.doctor_name) AS doctor_name
+                FROM shift_schedule s
+                LEFT JOIN doctors d ON d.id = s.doctor_id
+                WHERE s.shift_date = %s AND s.shift_time = %s;
+                """,
+                (shift_date, shift_time),
+            )
+            row = cur.fetchone()
+            return False, (row[0] if row else "outro médico")
+
+    result = _with_connection(_claim, transactional=True)
+    fetch_month_schedule.clear()
+    return result
+
+
+def render_quick_claim_calendar(df_raw, ano, mes, doctor_name, doctor_id):
+    """Calendário operacional: turno vazio vira um botão de um clique para o médico."""
+    calendar.setfirstweekday(calendar.MONDAY)
+    weeks = calendar.monthcalendar(ano, mes)
+    hoje_local = datetime.date.today()
+    occupied = {}
+    if not df_raw.empty:
+        for _, r in df_raw.iterrows():
+            dt = pd.Timestamp(r['shift_date']).date()
+            occupied[(dt, r['shift_time'])] = str(r['doctor_name'])
+
+    emoji_turno = {'Manhã': '🌅', 'Tarde': '☀️', 'Noite': '🌙'}
+    st.caption("Toque em **+ Assumir** no turno vazio. A vaga é gravada imediatamente — sem botão Salvar.")
+
+    for week_idx, week in enumerate(weeks):
+        cols = st.columns(7)
+        for wd, day in enumerate(week):
+            with cols[wd]:
+                if day == 0:
+                    st.markdown("<div style='height:190px;opacity:.18;border:1px solid #172132;border-radius:10px;'></div>", unsafe_allow_html=True)
+                    continue
+
+                dt = datetime.date(ano, mes, day)
+                hoje_badge = " · **Hoje**" if dt == hoje_local else ""
+                st.markdown(f"**{DIAS_SEMANA_CURTO[wd]} {day:02d}**{hoje_badge}")
+                for turno in TURNOS:
+                    atual = occupied.get((dt, turno), "")
+                    emoji = emoji_turno[turno]
+                    if atual:
+                        if atual == doctor_name:
+                            st.markdown(f"{emoji} **✓ Você**")
+                        else:
+                            st.markdown(f"{emoji} {html.escape(atual)}")
+                    else:
+                        if st.button(
+                            f"＋ {turno}",
+                            key=f"claim_{ano}_{mes}_{day}_{turno}_{doctor_id}",
+                            use_container_width=True,
+                            help=f"Assumir {turno.lower()} de {day:02d}/{mes:02d}",
+                        ):
+                            ok, owner = claim_shift_atomic(dt, turno, doctor_id, doctor_name)
+                            if ok:
+                                st.session_state['claim_flash'] = (
+                                    'success',
+                                    f"{doctor_name}: {turno.lower()} de {day:02d}/{mes:02d} assumido com sucesso."
+                                )
+                            else:
+                                st.session_state['claim_flash'] = (
+                                    'warning',
+                                    f"Esse turno acabou de ser assumido por {owner}."
+                                )
+                            st.rerun()
 def current_state_from_edits(all_edits, ano, mes):
     rows = []
     for week_idx, (w_days, ed) in enumerate(all_edits):
@@ -760,23 +852,38 @@ def _toggle_pattern_preview():
 
 
 def render_period_selector():
-    """Seletor principal do período, visível nas telas mensais mesmo com a sidebar fechada."""
+    """Período mensal evidente, com navegação rápida e seletores avançados escondidos."""
     mes_atual = int(st.session_state['period_month'])
     ano_atual = int(st.session_state['period_year'])
-    st.markdown(
-        f"<div class='period-hero'><div class='eyebrow'>Escala de referência</div>"
-        f"<div class='title'>{MESES[mes_atual-1]} {ano_atual}</div></div>",
-        unsafe_allow_html=True
+
+    cprev, ctitle, cnext = st.columns([1.15, 4.7, 1.15])
+    cprev.button(
+        "‹", key=f"period_prev_{st.session_state['page']}", use_container_width=True,
+        on_click=_shift_period, args=(-1,), help="Mês anterior"
     )
-    years = list(range(hoje.year - 3, hoje.year + 5))
-    if ano_atual not in years:
-        years = sorted(set(years + [ano_atual]))
-    cprev, cmonth, cyear, ctoday, cnext = st.columns([1.15, 1.55, 1.0, .9, 1.15])
-    cprev.button("‹ Anterior", key=f"period_prev_{st.session_state['page']}", use_container_width=True, on_click=_shift_period, args=(-1,))
-    cmonth.selectbox("Mês", range(1, 13), format_func=lambda x: MESES[x-1], key='period_month', on_change=_period_changed)
-    cyear.selectbox("Ano", years, key='period_year', on_change=_period_changed)
-    ctoday.button("Hoje", key=f"period_today_{st.session_state['page']}", use_container_width=True, on_click=_ir_para_hoje)
-    cnext.button("Próximo ›", key=f"period_next_{st.session_state['page']}", use_container_width=True, on_click=_shift_period, args=(1,))
+    with ctitle:
+        st.markdown(
+            f"<div class='period-hero'><div class='eyebrow'>Escala</div>"
+            f"<div class='title'>{MESES[mes_atual-1]} {ano_atual}</div></div>",
+            unsafe_allow_html=True,
+        )
+    cnext.button(
+        "›", key=f"period_next_{st.session_state['page']}", use_container_width=True,
+        on_click=_shift_period, args=(1,), help="Próximo mês"
+    )
+
+    csp1, ctoday, cchoose, csp2 = st.columns([2.3, 1.1, 1.5, 2.3])
+    ctoday.button(
+        "Hoje", key=f"period_today_{st.session_state['page']}", use_container_width=True,
+        on_click=_ir_para_hoje
+    )
+    with cchoose:
+        with st.popover("📅 Outro mês", use_container_width=True):
+            years = list(range(hoje.year - 3, hoje.year + 5))
+            if ano_atual not in years:
+                years = sorted(set(years + [ano_atual]))
+            st.selectbox("Mês", range(1, 13), format_func=lambda x: MESES[x-1], key='period_month', on_change=_period_changed)
+            st.selectbox("Ano", years, key='period_year', on_change=_period_changed)
 
 
 # =================================================================
@@ -815,14 +922,21 @@ ano = int(st.session_state['period_year'])
 mes_nome = MESES[mes_num - 1]
 page = st.session_state['page']
 
-# Cabeçalho compacto + ações essenciais sempre visíveis, independente da sidebar.
-hbrand, hscale, hswap = st.columns([6, 1.25, 1.25])
-with hbrand:
-    st.markdown("<div class='compact-brand'><div class='mini-badge'>HH</div><div><div class='brand-title'>Hospital HELP · Radiologia</div><div class='brand-sub'>Escala médica</div></div></div>", unsafe_allow_html=True)
-with hscale:
-    st.button("📅 Escala", key='top_nav_escala', type='primary' if page == '📅 Escala' else 'secondary', use_container_width=True, on_click=_set_page, args=('📅 Escala',))
-with hswap:
-    st.button("🔄 Trocas", key='top_nav_trocas', type='primary' if page == '🔄 Trocas' else 'secondary', use_container_width=True, on_click=_set_page, args=('🔄 Trocas',))
+# Cabeçalho compacto. Na tela principal, Trocas é a única ação extra visível.
+if page == '📅 Escala':
+    hbrand, hswap = st.columns([7, 1.45])
+    with hbrand:
+        st.markdown("<div class='compact-brand'><div class='mini-badge'>HH</div><div><div class='brand-title'>Hospital HELP · Radiologia</div><div class='brand-sub'>Escala médica</div></div></div>", unsafe_allow_html=True)
+    with hswap:
+        st.button("🔄 Trocas", key='top_nav_trocas', type='secondary', use_container_width=True, on_click=_set_page, args=('🔄 Trocas',))
+else:
+    hbrand, hscale, hswap = st.columns([6, 1.25, 1.25])
+    with hbrand:
+        st.markdown("<div class='compact-brand'><div class='mini-badge'>HH</div><div><div class='brand-title'>Hospital HELP · Radiologia</div><div class='brand-sub'>Escala médica</div></div></div>", unsafe_allow_html=True)
+    with hscale:
+        st.button("📅 Escala", key='top_nav_escala', type='secondary', use_container_width=True, on_click=_set_page, args=('📅 Escala',))
+    with hswap:
+        st.button("🔄 Trocas", key='top_nav_trocas', type='primary' if page == '🔄 Trocas' else 'secondary', use_container_width=True, on_click=_set_page, args=('🔄 Trocas',))
 st.divider()
 
 # =================================================================
@@ -897,7 +1011,6 @@ def generate_pdf_semanal(weeks, pivot, resumo, mes, ano, shift_types_df):
 # =================================================================
 if page == '📅 Escala':
     render_period_selector()
-    # Releia o estado do período porque callbacks/selectboxes podem tê-lo alterado.
     mes_num = int(st.session_state['period_month'])
     ano = int(st.session_state['period_year'])
     mes_nome = MESES[mes_num - 1]
@@ -908,53 +1021,90 @@ if page == '📅 Escala':
     total_slots = dias_mes * len(TURNOS)
     filled = len(df_raw)
 
-    # Ações do médico ficam antes do calendário. Trocas permanece visível mesmo sem sidebar.
+    # O médico se identifica uma vez na sessão e, depois disso, assume vagas com um único clique.
+    if st.session_state.get('medico_alvo_escala') not in ([""] + active_names):
+        st.session_state.pop('medico_alvo_escala', None)
+
     cdoc, ctroca = st.columns([5.2, 1.5])
     with cdoc:
-        medico_alvo = st.selectbox("🔎 Destacar médico na escala", [""] + all_names, key='medico_alvo_escala')
+        medico_alvo = st.selectbox(
+            "👤 Eu sou",
+            [""] + active_names,
+            key='medico_alvo_escala',
+            help="Escolha seu nome uma vez. Depois toque diretamente nos turnos vazios.",
+        )
     with ctroca:
-        st.write("")
-        st.button("🔄 Trocas", key='escala_trocas_top', type='primary', use_container_width=True, on_click=_set_page, args=('🔄 Trocas',))
+        st.button(
+            "🔄 Trocas", key='escala_trocas_top', type='primary', use_container_width=True,
+            on_click=_set_page, args=('🔄 Trocas',)
+        )
+
+    flash = st.session_state.pop('claim_flash', None)
+    if flash:
+        kind, message = flash
+        if kind == 'success':
+            st.success(message)
+        else:
+            st.warning(message)
+
+    st.markdown(
+        "<div class='turno-legend'><div class='item'><span class='dot dot-manha'></span>Manhã</div>"
+        "<div class='item'><span class='dot dot-tarde'></span>Tarde</div>"
+        "<div class='item'><span class='dot dot-noite'></span>Noite</div></div>",
+        unsafe_allow_html=True,
+    )
 
     if medico_alvo:
+        render_quick_claim_calendar(
+            df_raw, ano, mes_num, medico_alvo, id_by_name[medico_alvo]
+        )
+    else:
+        st.info("Escolha seu nome em **Eu sou** para assumir um turno vazio com um toque.")
+        render_schedule_calendar(df_pivot, ano, mes_num, "")
+
+    # Informações pessoais são úteis, mas ficam fora do caminho principal.
+    if medico_alvo:
         df_pessoal = df_raw[df_raw['doctor_name'] == medico_alvo].copy().sort_values('shift_date')
-        ci, cics = st.columns([4.5, 2.2])
-        with ci:
+        with st.expander(f"📅 Meus plantões · {len(df_pessoal)} neste mês"):
             if df_pessoal.empty:
-                st.caption(f"{medico_alvo}: nenhum plantão em {mes_nome}/{ano}.")
+                st.caption(f"Nenhum plantão de {medico_alvo} em {mes_nome}/{ano}.")
             else:
-                st.markdown(f"<div class='month-summary'><b>{html.escape(medico_alvo)}</b> · {len(df_pessoal)} plantão(ões) no mês. Os plantões estão destacados em azul.</div>", unsafe_allow_html=True)
-        with cics:
-            if not df_pessoal.empty:
+                lista_pessoal = df_pessoal.copy()
+                lista_pessoal['Data'] = pd.to_datetime(lista_pessoal['shift_date']).dt.strftime('%d/%m/%Y')
+                lista_pessoal = lista_pessoal.rename(columns={'shift_time':'Turno'})
+                st.dataframe(lista_pessoal[['Data','Turno']], hide_index=True, use_container_width=True)
                 shift_types_df_ics = get_shift_types()
                 ics_bytes = generate_ics(df_pessoal, medico_alvo, shift_types_df_ics)
                 st.download_button(
                     "📅 Adicionar ao meu calendário (.ics)", data=ics_bytes,
                     file_name=f"Plantões_{medico_alvo}_{mes_nome}_{ano}.ics", mime="text/calendar",
-                    use_container_width=True
+                    use_container_width=True,
                 )
 
-    # O calendário é o conteúdo principal e aparece antes de métricas/ferramentas administrativas.
-    st.markdown("<div class='turno-legend'><div class='item'><span class='dot dot-manha'></span>Manhã</div><div class='item'><span class='dot dot-tarde'></span>Tarde</div><div class='item'><span class='dot dot-noite'></span>Noite</div></div>", unsafe_allow_html=True)
-    render_schedule_calendar(df_pivot, ano, mes_num, medico_alvo)
-
-    st.markdown("### Resumo do mês")
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Turnos cobertos", f"{filled}/{total_slots}")
-    c2.metric("Sem médico", max(total_slots - filled, 0))
-    c3.metric("Médicos escalados", df_raw['doctor_id'].nunique() if not df_raw.empty else 0)
-    c4.metric("Cobertura", f"{(filled / total_slots * 100):.0f}%" if total_slots else "0%")
-
-    # Ferramentas administrativas ficam depois da escala e só carregam conteúdo pesado quando abertas.
-    cpattern, cedit = st.columns([2.2, 2.2])
-    cpattern.button(
-        "✨ Aplicar Padrão Rotativo" if not st.session_state['show_pattern_preview'] else "✕ Fechar prévia do padrão",
-        key='toggle_pattern_preview_btn', use_container_width=True, on_click=_toggle_pattern_preview
+    # Para o médico comum basta uma linha de status; controles de gestão ficam recolhidos.
+    cobertura = (filled / total_slots * 100) if total_slots else 0
+    st.markdown(
+        f"<div class='month-summary'>{filled}/{total_slots} turnos cobertos · "
+        f"{max(total_slots-filled, 0)} sem médico · {cobertura:.0f}% de cobertura</div>",
+        unsafe_allow_html=True,
     )
-    cedit.button(
-        "✏️ Editar escala" if not st.session_state['scale_edit_mode'] else "👁️ Voltar à visualização",
-        key='toggle_scale_edit_btn', use_container_width=True, on_click=_toggle_scale_edit
-    )
+
+    with st.expander("⚙️ Administração e ferramentas"):
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Turnos cobertos", f"{filled}/{total_slots}")
+        c2.metric("Sem médico", max(total_slots - filled, 0))
+        c3.metric("Médicos escalados", df_raw['doctor_id'].nunique() if not df_raw.empty else 0)
+        c4.metric("Cobertura", f"{cobertura:.0f}%")
+
+        cpattern, cedit = st.columns(2)
+        cpattern.button(
+            "✨ Aplicar Padrão Rotativo" if not st.session_state['show_pattern_preview'] else "✕ Fechar prévia do padrão",
+            key='toggle_pattern_preview_btn', use_container_width=True, on_click=_toggle_pattern_preview
+        )
+        cedit.button(
+            "✏️ Editar escala completa" if not st.session_state['scale_edit_mode'] else "👁️ Fechar editor",
+            key='toggle_scale_edit_btn', use_container_width=True, on_click=_toggle_scale_edit
+        )
 
     if st.session_state['show_pattern_preview']:
         st.subheader("Prévia do padrão rotativo")
@@ -985,8 +1135,8 @@ if page == '📅 Escala':
             st.rerun()
 
     if st.session_state['scale_edit_mode']:
-        st.subheader("✏️ Edição da escala mensal")
-        st.caption("A edição completa só é carregada quando necessária; a visualização normal permanece leve para os médicos.")
+        st.subheader("✏️ Edição administrativa da escala")
+        st.caption("Use este editor apenas para alterações em lote. Para assumir uma vaga, o médico deve usar o calendário acima.")
         calendar.setfirstweekday(calendar.MONDAY)
         weeks = calendar.monthcalendar(ano, mes_num)
         existing_names = df_raw['doctor_name'].dropna().unique().tolist() if not df_raw.empty else []
