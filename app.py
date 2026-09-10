@@ -667,37 +667,54 @@ def aplicar_estilo_visual():
     div[data-testid="stVerticalBlockBorderWrapper"]:has(.identity-panel-anchor) [data-baseweb="select"]>div{min-height:52px!important;border:2px solid #3B82F6!important;background:#0B1526!important;font-size:1rem!important}
 
     /* GRID UNIFORME DO CALENDÁRIO RÁPIDO */
-    .quick-day-anchor,.self-day-anchor{display:none}
+    .quick-day-anchor,.self-day-anchor{display:none!important}
     div[data-testid="stVerticalBlockBorderWrapper"]:has(.quick-day-anchor){
-        height:224px!important;min-height:224px!important;max-height:224px!important;
-        box-sizing:border-box!important;overflow:visible!important;
+        height:228px!important;min-height:228px!important;max-height:228px!important;
+        box-sizing:border-box!important;overflow:hidden!important;
         background:#111A29!important;border:1px solid #334155!important;border-radius:11px!important;
-        padding:.28rem .35rem!important;
+        padding:.55rem .55rem .5rem!important;
+        display:flex!important;flex-direction:column!important;justify-content:flex-start!important;align-items:stretch!important;
     }
-    /* O dia do próprio médico muda só de tom; não ganha nenhum conteúdo extra. */
+    div[data-testid="stVerticalBlockBorderWrapper"]:has(.quick-day-anchor) > div{
+        height:100%!important;display:flex!important;flex-direction:column!important;justify-content:flex-start!important;
+    }
+    /* O dia inteiro muda de cor quando existe qualquer plantão do médico selecionado. */
     div[data-testid="stVerticalBlockBorderWrapper"]:has(.quick-day-anchor):has(.self-day-anchor){
-        background:linear-gradient(180deg,rgba(37,99,235,.15),rgba(17,26,41,.98))!important;
-        border-color:#3B82F6!important;
-        box-shadow:0 0 0 1px rgba(59,130,246,.15) inset,0 5px 15px rgba(37,99,235,.08)!important;
+        background:linear-gradient(180deg,rgba(37,99,235,.20),rgba(15,23,38,.98))!important;
+        border:1px solid #3B82F6!important;
+        box-shadow:0 0 0 1px rgba(59,130,246,.16) inset,0 8px 18px rgba(37,99,235,.10)!important;
     }
-    /* Vagas e nomes clicáveis ocupam a mesma altura do marcador Você. */
+    /* Título da data sempre no topo e sem margem variável. */
+    div[data-testid="stVerticalBlockBorderWrapper"]:has(.quick-day-anchor) [data-testid="stMarkdownContainer"] p{margin:0!important;}
+    .quick-day-title{display:block;margin:0 0 12px 0!important;color:#F8FAFC;font-size:1.02rem;font-weight:800;line-height:1.15;min-height:24px}
+    /* Vagas, nomes clicáveis e Você com espaçamento uniforme. */
+    div[data-testid="stVerticalBlockBorderWrapper"]:has(.quick-day-anchor) .stButton,
+    div[data-testid="stVerticalBlockBorderWrapper"]:has(.quick-day-anchor) .stPopover,
+    div[data-testid="stVerticalBlockBorderWrapper"]:has(.quick-day-anchor) [data-testid="stMarkdownContainer"]:has(.quick-self-slot),
+    div[data-testid="stVerticalBlockBorderWrapper"]:has(.quick-day-anchor) .quick-day-spacer{margin:0 0 8px 0!important;}
     div[data-testid="stVerticalBlockBorderWrapper"]:has(.quick-day-anchor) button{
         min-height:40px!important;height:40px!important;max-height:40px!important;
-        padding:.2rem .48rem!important;margin:0!important;
+        padding:.2rem .48rem!important;margin:0!important;border-radius:10px!important;
     }
     div[data-testid="stVerticalBlockBorderWrapper"]:has(.quick-day-anchor) button p{
         white-space:nowrap!important;overflow:hidden!important;text-overflow:ellipsis!important;font-size:.79rem!important;
     }
     .quick-self-slot{
         display:flex;align-items:center;gap:7px;width:100%;box-sizing:border-box;
-        height:40px;min-height:40px;max-height:40px;margin:0;padding:5px 8px;border-radius:9px;
+        height:40px;min-height:40px;max-height:40px;margin:0;padding:5px 10px;border-radius:10px;
         background:linear-gradient(135deg,rgba(37,99,235,.30),rgba(29,78,216,.18));
         border:1px solid #3B82F6;border-left:3px solid #60A5FA;
         box-shadow:0 0 0 1px rgba(59,130,246,.08) inset;
         overflow:hidden;
     }
-    .quick-self-slot .self-emoji{flex:0 0 auto}.quick-self-slot .self-check{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:50%;background:#3B82F6;color:#FFF;font-size:.72rem;font-weight:900;flex:0 0 18px}.quick-self-slot .self-label{color:#F8FBFF;font-weight:800;font-size:.88rem;white-space:nowrap}
+    .quick-self-slot .self-emoji{flex:0 0 auto}
+    .quick-self-slot .self-check{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:50%;background:#3B82F6;color:#FFF;font-size:.72rem;font-weight:900;flex:0 0 18px}
+    .quick-self-slot .self-label{color:#F8FBFF;font-weight:800;font-size:.88rem;white-space:nowrap}
     .quick-day-spacer{height:40px;min-height:40px;max-height:40px}
+    div[data-testid="stVerticalBlockBorderWrapper"]:has(.quick-day-anchor) .stButton:last-child,
+    div[data-testid="stVerticalBlockBorderWrapper"]:has(.quick-day-anchor) .stPopover:last-child,
+    div[data-testid="stVerticalBlockBorderWrapper"]:has(.quick-day-anchor) [data-testid="stMarkdownContainer"]:has(.quick-self-slot):last-child,
+    div[data-testid="stVerticalBlockBorderWrapper"]:has(.quick-day-anchor) .quick-day-spacer:last-child{margin-bottom:0!important;}
     .month-summary{color:#7B8AA3;font-size:.82rem;margin:.15rem 0 .6rem}
     .block-container{padding-top:.8rem!important}
     @media(max-width:700px){.block-container{padding-left:.65rem!important;padding-right:.65rem!important}.period-hero .title{font-size:1.45rem}div[data-testid="stVerticalBlockBorderWrapper"]:has(.quick-day-anchor){height:218px!important;min-height:218px!important;max-height:218px!important}}
@@ -816,14 +833,17 @@ def render_quick_claim_calendar(df_raw, ano, mes, doctor_name, doctor_id):
                 with st.container(border=True):
                     st.markdown("<span class='quick-day-anchor'></span>",unsafe_allow_html=True)
                     if day==0:
-                        st.markdown("<div class='quick-day-spacer'></div><div class='quick-day-spacer'></div><div class='quick-day-spacer'></div><div class='quick-day-spacer'></div>",unsafe_allow_html=True)
+                        st.markdown("<div class='quick-day-title'>&nbsp;</div>",unsafe_allow_html=True)
+                        st.markdown("<div class='quick-day-spacer'></div>",unsafe_allow_html=True)
+                        st.markdown("<div class='quick-day-spacer'></div>",unsafe_allow_html=True)
+                        st.markdown("<div class='quick-day-spacer'></div>",unsafe_allow_html=True)
                         continue
                     dt=datetime.date(ano,mes,day)
                     day_has_self=any(occupied.get((dt,t),{}).get('name')==doctor_name for t in TURNOS)
                     if day_has_self:
                         st.markdown("<span class='self-day-anchor'></span>",unsafe_allow_html=True)
-                    hoje_txt=' · **Hoje**' if dt==hoje else ''
-                    st.markdown(f"**{DIAS_SEMANA_CURTO[wd]} {day:02d}**{hoje_txt}")
+                    hoje_txt=' · Hoje' if dt==hoje else ''
+                    st.markdown(f"<div class='quick-day-title'>{DIAS_SEMANA_CURTO[wd]} {day:02d}{hoje_txt}</div>",unsafe_allow_html=True)
                     for turno in TURNOS:
                         info=occupied.get((dt,turno)); em=emoji[turno]
                         if info:
