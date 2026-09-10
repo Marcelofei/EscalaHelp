@@ -666,43 +666,80 @@ def aplicar_estilo_visual():
     div[data-testid="stVerticalBlockBorderWrapper"]:has(.identity-panel-anchor){border:1px solid #3B82F6!important;background:linear-gradient(135deg,rgba(37,99,235,.16),rgba(17,26,41,.98))!important;box-shadow:0 0 0 1px rgba(59,130,246,.10),0 8px 26px rgba(37,99,235,.12)!important;padding:.35rem .45rem .5rem!important;margin:.25rem 0 1rem!important}
     div[data-testid="stVerticalBlockBorderWrapper"]:has(.identity-panel-anchor) [data-baseweb="select"]>div{min-height:52px!important;border:2px solid #3B82F6!important;background:#0B1526!important;font-size:1rem!important}
 
-    /* GRID UNIFORME DO CALENDÁRIO RÁPIDO */
-    .quick-day-anchor,.self-day-anchor{display:none!important}
-    div[data-testid="stVerticalBlockBorderWrapper"]:has(.quick-day-anchor){
-        height:228px!important;min-height:228px!important;max-height:228px!important;
-        box-sizing:border-box!important;overflow:hidden!important;
-        background:#111A29!important;border:1px solid #334155!important;border-radius:11px!important;
-        padding:.55rem .55rem .5rem!important;
-        display:flex!important;flex-direction:column!important;justify-content:flex-start!important;align-items:stretch!important;
+    /* GRID UNIFORME DO CALENDÁRIO RÁPIDO — tamanho estrutural, não cosmético */
+    [class*="st-key-calday_"] [data-testid="stVerticalBlockBorderWrapper"],
+    [class*="st-key-calself_"] [data-testid="stVerticalBlockBorderWrapper"],
+    [class*="st-key-calempty_"] [data-testid="stVerticalBlockBorderWrapper"],
+    div[data-testid="stVerticalBlockBorderWrapper"]:has(.quick-day-title){
+        height:230px!important;min-height:230px!important;max-height:230px!important;
+        box-sizing:border-box!important;
+        background:#111A29!important;
+        border:1px solid #334155!important;
+        border-radius:11px!important;
+        overflow:hidden!important;
     }
-    div[data-testid="stVerticalBlockBorderWrapper"]:has(.quick-day-anchor) > div{
-        height:100%!important;display:flex!important;flex-direction:column!important;justify-content:flex-start!important;
+    /* Fallback + regra direta: o DIA INTEIRO muda de tom quando há Você. */
+    [class*="st-key-calself_"] [data-testid="stVerticalBlockBorderWrapper"],
+    [class*="st-key-calself_"],
+    div[data-testid="stVerticalBlockBorderWrapper"]:has(.quick-day-title.day-has-self){
+        background:linear-gradient(180deg,rgba(37,99,235,.24),rgba(15,23,38,.98))!important;
+        border-color:#3B82F6!important;
+        box-shadow:0 0 0 1px rgba(59,130,246,.18) inset,0 7px 18px rgba(37,99,235,.10)!important;
     }
-    /* O dia inteiro muda de cor quando existe qualquer plantão do médico selecionado. */
-    div[data-testid="stVerticalBlockBorderWrapper"]:has(.quick-day-anchor):has(.self-day-anchor){
-        background:linear-gradient(180deg,rgba(37,99,235,.20),rgba(15,23,38,.98))!important;
-        border:1px solid #3B82F6!important;
-        box-shadow:0 0 0 1px rgba(59,130,246,.16) inset,0 8px 18px rgba(37,99,235,.10)!important;
+    /* O bloco interno sempre começa no topo e usa o MESMO gap entre data/turnos. */
+    [class*="st-key-calday_"] [data-testid="stVerticalBlock"],
+    [class*="st-key-calself_"] [data-testid="stVerticalBlock"],
+    [class*="st-key-calempty_"] [data-testid="stVerticalBlock"],
+    div[data-testid="stVerticalBlockBorderWrapper"]:has(.quick-day-title) [data-testid="stVerticalBlock"]{
+        gap:8px!important;
+        justify-content:flex-start!important;
+        align-content:flex-start!important;
+        padding:0!important;
     }
-    /* Título da data sempre no topo e sem margem variável. */
-    div[data-testid="stVerticalBlockBorderWrapper"]:has(.quick-day-anchor) [data-testid="stMarkdownContainer"] p{margin:0!important;}
-    .quick-day-title{display:block;margin:0 0 12px 0!important;color:#F8FAFC;font-size:1.02rem;font-weight:800;line-height:1.15;min-height:24px}
-    /* Vagas, nomes clicáveis e Você com espaçamento uniforme. */
-    div[data-testid="stVerticalBlockBorderWrapper"]:has(.quick-day-anchor) .stButton,
-    div[data-testid="stVerticalBlockBorderWrapper"]:has(.quick-day-anchor) .stPopover,
-    div[data-testid="stVerticalBlockBorderWrapper"]:has(.quick-day-anchor) [data-testid="stMarkdownContainer"]:has(.quick-self-slot),
-    div[data-testid="stVerticalBlockBorderWrapper"]:has(.quick-day-anchor) .quick-day-spacer{margin:0 0 8px 0!important;}
-    div[data-testid="stVerticalBlockBorderWrapper"]:has(.quick-day-anchor) button{
-        min-height:40px!important;height:40px!important;max-height:40px!important;
-        padding:.2rem .48rem!important;margin:0!important;border-radius:10px!important;
+    /* Data: altura invariável e sempre ancorada no topo. */
+    .quick-day-title{
+        height:28px!important;min-height:28px!important;max-height:28px!important;
+        display:flex!important;align-items:center!important;
+        margin:0!important;padding:0!important;
+        color:#F8FAFC;font-size:1rem;font-weight:800;line-height:1!important;
+        overflow:hidden!important;white-space:nowrap!important;
     }
-    div[data-testid="stVerticalBlockBorderWrapper"]:has(.quick-day-anchor) button p{
-        white-space:nowrap!important;overflow:hidden!important;text-overflow:ellipsis!important;font-size:.79rem!important;
+    div[data-testid="stVerticalBlockBorderWrapper"]:has(.quick-day-title) [data-testid="stMarkdownContainer"] p{margin:0!important;}
+    /* Cada um dos 3 turnos ocupa exatamente 40px. O gap vem do pai (8px). */
+    [class*="st-key-calday_"] .stButton,
+    [class*="st-key-calday_"] .stPopover,
+    [class*="st-key-calself_"] .stButton,
+    [class*="st-key-calself_"] .stPopover,
+    div[data-testid="stVerticalBlockBorderWrapper"]:has(.quick-day-title) .stButton,
+    div[data-testid="stVerticalBlockBorderWrapper"]:has(.quick-day-title) .stPopover{
+        height:40px!important;min-height:40px!important;max-height:40px!important;
+        margin:0!important;padding:0!important;
+    }
+    [class*="st-key-calday_"] button,
+    [class*="st-key-calself_"] button,
+    div[data-testid="stVerticalBlockBorderWrapper"]:has(.quick-day-title) button{
+        width:100%!important;
+        height:40px!important;min-height:40px!important;max-height:40px!important;
+        margin:0!important;padding:.2rem .48rem!important;
+        border-radius:10px!important;
+    }
+    [class*="st-key-calday_"] button p,
+    [class*="st-key-calself_"] button p,
+    div[data-testid="stVerticalBlockBorderWrapper"]:has(.quick-day-title) button p{
+        margin:0!important;line-height:1!important;
+        white-space:nowrap!important;overflow:hidden!important;text-overflow:ellipsis!important;
+        font-size:.79rem!important;
+    }
+    /* Você tem o mesmo 40px dos demais slots e nenhum conteúdo extra. */
+    div[data-testid="stMarkdownContainer"]:has(.quick-self-slot){
+        height:40px!important;min-height:40px!important;max-height:40px!important;
+        margin:0!important;padding:0!important;
     }
     .quick-self-slot{
         display:flex;align-items:center;gap:7px;width:100%;box-sizing:border-box;
-        height:40px;min-height:40px;max-height:40px;margin:0;padding:5px 10px;border-radius:10px;
-        background:linear-gradient(135deg,rgba(37,99,235,.30),rgba(29,78,216,.18));
+        height:40px!important;min-height:40px!important;max-height:40px!important;
+        margin:0!important;padding:5px 10px;border-radius:10px;
+        background:linear-gradient(135deg,rgba(37,99,235,.34),rgba(29,78,216,.20));
         border:1px solid #3B82F6;border-left:3px solid #60A5FA;
         box-shadow:0 0 0 1px rgba(59,130,246,.08) inset;
         overflow:hidden;
@@ -710,14 +747,10 @@ def aplicar_estilo_visual():
     .quick-self-slot .self-emoji{flex:0 0 auto}
     .quick-self-slot .self-check{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:50%;background:#3B82F6;color:#FFF;font-size:.72rem;font-weight:900;flex:0 0 18px}
     .quick-self-slot .self-label{color:#F8FBFF;font-weight:800;font-size:.88rem;white-space:nowrap}
-    .quick-day-spacer{height:40px;min-height:40px;max-height:40px}
-    div[data-testid="stVerticalBlockBorderWrapper"]:has(.quick-day-anchor) .stButton:last-child,
-    div[data-testid="stVerticalBlockBorderWrapper"]:has(.quick-day-anchor) .stPopover:last-child,
-    div[data-testid="stVerticalBlockBorderWrapper"]:has(.quick-day-anchor) [data-testid="stMarkdownContainer"]:has(.quick-self-slot):last-child,
-    div[data-testid="stVerticalBlockBorderWrapper"]:has(.quick-day-anchor) .quick-day-spacer:last-child{margin-bottom:0!important;}
+    .quick-day-spacer{height:40px!important;min-height:40px!important;max-height:40px!important;margin:0!important;padding:0!important;}
     .month-summary{color:#7B8AA3;font-size:.82rem;margin:.15rem 0 .6rem}
     .block-container{padding-top:.8rem!important}
-    @media(max-width:700px){.block-container{padding-left:.65rem!important;padding-right:.65rem!important}.period-hero .title{font-size:1.45rem}div[data-testid="stVerticalBlockBorderWrapper"]:has(.quick-day-anchor){height:218px!important;min-height:218px!important;max-height:218px!important}}
+    @media(max-width:700px){.block-container{padding-left:.65rem!important;padding-right:.65rem!important}.period-hero .title{font-size:1.45rem}}
     </style>
     """, unsafe_allow_html=True)
 
@@ -813,6 +846,17 @@ page=st.session_state['page']; mes_num=int(st.session_state['period_month']); an
 # =================================================================
 # CALENDÁRIO OPERACIONAL UNIFORME
 # =================================================================
+def fixed_day_container(key):
+    """Altura fixa real; mantém fallback para versões antigas do Streamlit."""
+    try:
+        return st.container(height=230, border=True, key=key)
+    except TypeError:
+        try:
+            return st.container(height=230, border=True)
+        except TypeError:
+            return st.container(border=True)
+
+
 def render_quick_claim_calendar(df_raw, ano, mes, doctor_name, doctor_id):
     calendar.setfirstweekday(calendar.MONDAY)
     weeks=calendar.monthcalendar(ano,mes)
@@ -830,20 +874,22 @@ def render_quick_claim_calendar(df_raw, ano, mes, doctor_name, doctor_id):
         cols=st.columns(7,gap='small')
         for wd,day in enumerate(week):
             with cols[wd]:
-                with st.container(border=True):
-                    st.markdown("<span class='quick-day-anchor'></span>",unsafe_allow_html=True)
-                    if day==0:
+                if day==0:
+                    day_box = fixed_day_container(f"calempty_{ano}_{mes}_{week_idx}_{wd}")
+                    with day_box:
                         st.markdown("<div class='quick-day-title'>&nbsp;</div>",unsafe_allow_html=True)
                         st.markdown("<div class='quick-day-spacer'></div>",unsafe_allow_html=True)
                         st.markdown("<div class='quick-day-spacer'></div>",unsafe_allow_html=True)
                         st.markdown("<div class='quick-day-spacer'></div>",unsafe_allow_html=True)
-                        continue
-                    dt=datetime.date(ano,mes,day)
-                    day_has_self=any(occupied.get((dt,t),{}).get('name')==doctor_name for t in TURNOS)
-                    if day_has_self:
-                        st.markdown("<span class='self-day-anchor'></span>",unsafe_allow_html=True)
+                    continue
+
+                dt=datetime.date(ano,mes,day)
+                day_has_self=any(occupied.get((dt,t),{}).get('name')==doctor_name for t in TURNOS)
+                day_key = f"calself_{ano}_{mes}_{day}" if day_has_self else f"calday_{ano}_{mes}_{day}"
+                with fixed_day_container(day_key):
                     hoje_txt=' · Hoje' if dt==hoje else ''
-                    st.markdown(f"<div class='quick-day-title'>{DIAS_SEMANA_CURTO[wd]} {day:02d}{hoje_txt}</div>",unsafe_allow_html=True)
+                    self_cls=' day-has-self' if day_has_self else ''
+                    st.markdown(f"<div class='quick-day-title{self_cls}'>{DIAS_SEMANA_CURTO[wd]} {day:02d}{hoje_txt}</div>",unsafe_allow_html=True)
                     for turno in TURNOS:
                         info=occupied.get((dt,turno)); em=emoji[turno]
                         if info:
@@ -871,19 +917,28 @@ def render_quick_claim_calendar(df_raw, ano, mes, doctor_name, doctor_id):
 
 
 def render_readonly_calendar(pivot,ano,mes):
-    calendar.setfirstweekday(calendar.MONDAY); weeks=calendar.monthcalendar(ano,mes); emoji={'Manhã':'🌅','Tarde':'☀️','Noite':'🌙'}
-    for week in weeks:
+    calendar.setfirstweekday(calendar.MONDAY)
+    weeks=calendar.monthcalendar(ano,mes)
+    emoji={'Manhã':'🌅','Tarde':'☀️','Noite':'🌙'}
+    for week_idx,week in enumerate(weeks):
         cols=st.columns(7,gap='small')
         for wd,day in enumerate(week):
             with cols[wd]:
-                with st.container(border=True):
-                    st.markdown("<span class='quick-day-anchor'></span>",unsafe_allow_html=True)
-                    if day==0:
-                        st.markdown("<div class='quick-day-spacer'></div><div class='quick-day-spacer'></div><div class='quick-day-spacer'></div><div class='quick-day-spacer'></div>",unsafe_allow_html=True); continue
-                    st.markdown(f"**{DIAS_SEMANA_CURTO[wd]} {day:02d}**{' · **Hoje**' if datetime.date(ano,mes,day)==hoje else ''}")
+                if day==0:
+                    with fixed_day_container(f"calempty_read_{ano}_{mes}_{week_idx}_{wd}"):
+                        st.markdown("<div class='quick-day-title'>&nbsp;</div>",unsafe_allow_html=True)
+                        st.markdown("<div class='quick-day-spacer'></div>",unsafe_allow_html=True)
+                        st.markdown("<div class='quick-day-spacer'></div>",unsafe_allow_html=True)
+                        st.markdown("<div class='quick-day-spacer'></div>",unsafe_allow_html=True)
+                    continue
+                dt=datetime.date(ano,mes,day)
+                with fixed_day_container(f"calday_read_{ano}_{mes}_{day}"):
+                    hoje_txt=' · Hoje' if dt==hoje else ''
+                    st.markdown(f"<div class='quick-day-title'>{DIAS_SEMANA_CURTO[wd]} {day:02d}{hoje_txt}</div>",unsafe_allow_html=True)
                     for turno in TURNOS:
                         nome=str(pivot.at[turno,day]).strip() if day in pivot.columns and pd.notna(pivot.at[turno,day]) else ''
-                        st.markdown(f"{emoji[turno]} {html.escape(nome) if nome else '—'}")
+                        label=html.escape(nome) if nome else '—'
+                        st.markdown(f"<div class='quick-self-slot' style='background:#0D1420;border-color:#334155;border-left-color:#334155'><span class='self-emoji'>{emoji[turno]}</span><span class='self-label' style='font-weight:600'>{label}</span></div>",unsafe_allow_html=True)
 
 # =================================================================
 # PÁGINAS
