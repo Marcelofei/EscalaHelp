@@ -16,7 +16,7 @@ from fpdf import FPDF
 # =================================================================
 # 1. CONFIGURAÇÃO DA PÁGINA
 # =================================================================
-st.set_page_config(page_title="Hospital HELP — Escala de Radiologia", layout="wide", page_icon="🩻", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="Hospital HELP — Escala de Radiologia", layout="wide", page_icon="🩻", initial_sidebar_state="expanded")
 
 TURNOS = ["Manhã", "Tarde", "Noite"]
 MESES = ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho",
@@ -970,6 +970,36 @@ def aplicar_estilo_visual():
         border-radius:999px; background:rgba(59,130,246,.14); border:1px solid rgba(96,165,250,.28);
         color:#93C5FD; font-size:.59rem; font-weight:800; text-transform:uppercase; letter-spacing:.06em;
     }
+    /* Identificação do médico: ação principal antes de interagir com a escala. */
+    div[data-testid="stVerticalBlockBorderWrapper"]:has(.identity-panel-anchor) {
+        border:1px solid #3B82F6!important;
+        background:linear-gradient(135deg,rgba(37,99,235,.16),rgba(17,26,41,.98))!important;
+        box-shadow:0 0 0 1px rgba(59,130,246,.10),0 8px 26px rgba(37,99,235,.12)!important;
+        padding:.35rem .45rem .5rem!important;
+        margin:.25rem 0 1rem!important;
+    }
+    div[data-testid="stVerticalBlockBorderWrapper"]:has(.identity-panel-anchor) [data-baseweb="select"] > div {
+        min-height:52px!important;
+        border:2px solid #3B82F6!important;
+        background:#0B1526!important;
+        box-shadow:0 0 0 3px rgba(59,130,246,.10)!important;
+        font-size:1rem!important;
+    }
+    div[data-testid="stVerticalBlockBorderWrapper"]:has(.identity-panel-anchor) [data-baseweb="select"] > div:hover {
+        border-color:#60A5FA!important;
+        box-shadow:0 0 0 4px rgba(96,165,250,.13)!important;
+    }
+    .identity-panel-anchor { display:none; }
+    .identity-panel-head { display:flex; align-items:center; gap:12px; padding:5px 2px 10px; }
+    .identity-icon {
+        width:44px; height:44px; flex:0 0 44px; display:flex; align-items:center; justify-content:center;
+        border-radius:12px; background:linear-gradient(135deg,#2563EB,#1D4ED8);
+        box-shadow:0 5px 14px rgba(37,99,235,.28); font-size:1.25rem;
+    }
+    .identity-eyebrow { color:#93C5FD; font-size:.64rem; font-weight:900; letter-spacing:.10em; text-transform:uppercase; }
+    .identity-title { color:#F8FAFC; font-size:1.25rem; font-weight:850; letter-spacing:-.02em; line-height:1.15; margin-top:1px; }
+    .identity-subtitle { color:#A8B6CC; font-size:.78rem; line-height:1.35; margin-top:3px; }
+
     .month-summary { color:#7B8AA3; font-size:.82rem; margin:.15rem 0 .6rem; }
     @media (max-width: 700px) { .block-container { padding-left:.65rem!important; padding-right:.65rem!important; } .schedule-calendar { min-width:900px; } .period-hero .title { font-size:1.45rem; } }
     </style>
@@ -1106,7 +1136,6 @@ def nav_button(label, key):
 
 with st.sidebar:
     st.markdown("<div class='sidebar-brand'><div class='badge'>HH</div><div><div class='nome'>Hospital HELP</div><div class='depto'>Radiologia</div></div></div>", unsafe_allow_html=True)
-    st.caption("A sidebar fica recolhida por padrão; Escala e Trocas também permanecem acessíveis no topo.")
     st.divider()
 
 st.sidebar.markdown("<div class='nav-eyebrow'>Dia a dia</div>", unsafe_allow_html=True)
@@ -1129,22 +1158,8 @@ ano = int(st.session_state['period_year'])
 mes_nome = MESES[mes_num - 1]
 page = st.session_state['page']
 
-# Cabeçalho compacto. Na tela principal, Trocas é a única ação extra visível.
-if page == '📅 Escala':
-    hbrand, hswap = st.columns([7, 1.45])
-    with hbrand:
-        st.markdown("<div class='compact-brand'><div class='mini-badge'>HH</div><div><div class='brand-title'>Hospital HELP · Radiologia</div><div class='brand-sub'>Escala médica</div></div></div>", unsafe_allow_html=True)
-    with hswap:
-        st.button("🔄 Trocas", key='top_nav_trocas', type='secondary', use_container_width=True, on_click=_set_page, args=('🔄 Trocas',))
-else:
-    hbrand, hscale, hswap = st.columns([6, 1.25, 1.25])
-    with hbrand:
-        st.markdown("<div class='compact-brand'><div class='mini-badge'>HH</div><div><div class='brand-title'>Hospital HELP · Radiologia</div><div class='brand-sub'>Escala médica</div></div></div>", unsafe_allow_html=True)
-    with hscale:
-        st.button("📅 Escala", key='top_nav_escala', type='secondary', use_container_width=True, on_click=_set_page, args=('📅 Escala',))
-    with hswap:
-        st.button("🔄 Trocas", key='top_nav_trocas', type='primary' if page == '🔄 Trocas' else 'secondary', use_container_width=True, on_click=_set_page, args=('🔄 Trocas',))
-st.divider()
+# A navegação principal fica concentrada na sidebar, que abre expandida.
+# Isso evita duplicar Escala/Trocas numa barra superior e libera espaço vertical para o calendário.
 
 # =================================================================
 # 9. PDF OFICIAL — ESCALA SALVA + FECHAMENTO RH
@@ -1232,18 +1247,26 @@ if page == '📅 Escala':
     if st.session_state.get('medico_alvo_escala') not in ([""] + active_names):
         st.session_state.pop('medico_alvo_escala', None)
 
-    cdoc, ctroca = st.columns([5.2, 1.5])
-    with cdoc:
+    # Identificação é a ação de entrada mais importante da tela: destaque visual forte,
+    # sem competir com botões de navegação que já ficam na sidebar.
+    with st.container(border=True):
+        st.markdown("<span class='identity-panel-anchor'></span>", unsafe_allow_html=True)
+        st.markdown(
+            "<div class='identity-panel-head'>"
+            "<div class='identity-icon'>👤</div>"
+            "<div><div class='identity-eyebrow'>IDENTIFIQUE-SE PARA USAR A ESCALA</div>"
+            "<div class='identity-title'>Eu sou...</div>"
+            "<div class='identity-subtitle'>Escolha seu nome uma vez. Depois é só tocar no plantão que deseja assumir.</div></div>"
+            "</div>",
+            unsafe_allow_html=True,
+        )
         medico_alvo = st.selectbox(
-            "👤 Eu sou",
+            "Selecione seu nome",
             [""] + active_names,
             key='medico_alvo_escala',
-            help="Escolha seu nome uma vez. Depois toque diretamente nos turnos vazios.",
-        )
-    with ctroca:
-        st.button(
-            "🔄 Trocas", key='escala_trocas_top', type='primary', use_container_width=True,
-            on_click=_set_page, args=('🔄 Trocas',)
+            help="Depois de selecionar seu nome, os turnos vazios ficam disponíveis para assumir com um toque.",
+            label_visibility="collapsed",
+            placeholder="Toque aqui e escolha seu nome",
         )
 
     flash = st.session_state.pop('claim_flash', None)
