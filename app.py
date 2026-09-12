@@ -458,6 +458,11 @@ def swap_with_my_shift_atomic(target_date, target_time, target_owner_id, my_date
             cur.execute("UPDATE shift_schedule SET doctor_id=%s,doctor_name=%s WHERE shift_date=%s AND shift_time=%s",
                         (target[0], target[1], my_date, my_time))
             return True, "Troca realizada."
+    result = _with_connection(_swap, transactional=True)
+    fetch_month_schedule.clear()
+    return result
+
+
 def apply_admin_diff(changes, id_by_name):
     """Aplica em uma única transação só as células que o admin de fato alterou
     no editor em lote, cada uma condicionada a ainda estar no valor que o
