@@ -270,44 +270,64 @@ def get_shift_types():
     return df
 
 
-@st.cache_data(ttl=300, show_spinner=False)
-def get_rotation_anchor():
-    df = fetch_data("SELECT value FROM app_config WHERE key='rotation_anchor_date'")
-    if df.empty:
-        today = datetime.date.today()
-        return today - datetime.timedelta(days=today.weekday())
-    return datetime.date.fromisoformat(str(df.iloc[0]['value']))
+def month_rotation_weeks(ano, mes):
+    """Retorna as semanas visuais do mês, sempre reiniciando o ciclo na Semana 1.
+
+    A primeira linha do calendário do mês é Semana 1, a segunda Semana 2,
+    a terceira Semana 3 e a quarta Semana 4. Se o mês ocupar uma quinta
+    ou sexta linha, o ciclo reinicia em Semana 1 / Semana 2 dentro do próprio mês.
+    """
+    cal = calendar.Calendar(firstweekday=calendar.MONDAY)
+    return cal.monthdayscalendar(ano, mes)
 
 
-def set_rotation_anchor(data):
-    monday = data - datetime.timedelta(days=data.weekday())
-    execute_query("""
-      INSERT INTO app_config(key,value) VALUES('rotation_anchor_date',%s)
-      ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value
-    """, (monday.isoformat(),))
-    return monday
+def rotation_week_for_date(data):
+    """Índice 0..3 da semana rotativa dentro do próprio mês."""
+    for row_idx, week in enumerate(month_rotation_weeks(data.year, data.month)):
+        if data.day in week:
+            return row_idx % 4
+    raise ValueError(f"Data fora do calendário mensal: {data}")
 
 
-def cycle_week_for_date(data, anchor):
-    monday = data - datetime.timedelta(days=data.weekday())
-    return ((monday - anchor).days // 7) % 4
+def build_pattern_assignments(ano, mes, df_fix, anchor=None):
+    """Aplica o padrão de 4 semanas reiniciando obrigatoriamente a cada mês.
 
-
-def build_pattern_assignments(ano, mes, df_fix, anchor):
+    O parâmetro ``anchor`` é aceito apenas por compatibilidade com chamadas antigas,
+    mas não participa mais do cálculo.
+    """
     fix_map = {}
     if not df_fix.empty:
         for _, r in df_fix.iterrows():
             if pd.notna(r.get('doctor_id')):
-                fix_map[(int(r['week_num']), int(r['weekday']), r['shift_time'])] = (int(r['doctor_id']), str(r['doctor_name']))
+                fix_map[(int(r['week_num']), int(r['weekday']), r['shift_time'])] = (
+                    int(r['doctor_id']), str(r['doctor_name'])
+                )
+
     regs = []
-    for day in range(1, calendar.monthrange(ano, mes)[1] + 1):
-        dt = datetime.date(ano, mes, day)
-        week = cycle_week_for_date(dt, anchor)
-        for turno in TURNOS:
-            info = fix_map.get((week, dt.weekday(), turno))
-            if info:
-                regs.append((dt, turno, info[0], info[1]))
+    for row_idx, week_days in enumerate(month_rotation_weeks(ano, mes)):
+        pattern_week = row_idx % 4
+        for weekday, day in enumerate(week_days):
+            if day == 0:
+                continue
+            dt = datetime.date(ano, mes, day)
+            for turno in TURNOS:
+                info = fix_map.get((pattern_week, weekday, turno))
+                if info:
+                    regs.append((dt, turno, info[0], info[1]))
     return regs
+
+
+def rotation_month_summary(ano, mes):
+    """Rótulos explicativos das linhas do calendário e da semana de padrão aplicada."""
+    labels = []
+    for row_idx, week_days in enumerate(month_rotation_weeks(ano, mes)):
+        valid_days = [d for d in week_days if d]
+        if not valid_days:
+            continue
+        inicio, fim = valid_days[0], valid_days[-1]
+        semana = (row_idx % 4) + 1
+        labels.append((row_idx + 1, semana, inicio, fim))
+    return labels
 
 
 def schedule_to_pivot(df, ano, mes):
@@ -440,9 +460,7 @@ def swap_with_my_shift_atomic(target_date, target_time, target_owner_id, my_date
         with conn.cursor() as cur:
             cur.execute("""
               SELECT shift_date,shift_time,doctor_id,doctor_name FROM shift_schedule
-              WHERE (shift_date=%s AND shift_time=%s) OR (shift_date=%s AND shift_time=%s)
-              ORDER BY shift_date, shift_time
-              FOR UPDATE
+              WHERE (shift_date=%s AND shift_time=%s) OR (shift_date=%s AND shift_time=%s) FOR UPDATE
             """, (target_date, target_time, my_date, my_time))
             rows = cur.fetchall()
             state = {(r[0], r[1]): (r[2], r[3]) for r in rows}
@@ -462,96 +480,9 @@ def swap_with_my_shift_atomic(target_date, target_time, target_owner_id, my_date
     fetch_month_schedule.clear()
     return result
 
-
-def apply_admin_diff(changes, id_by_name):
-    """Aplica em uma única transação só as células que o admin de fato alterou
-    no editor em lote, cada uma condicionada a ainda estar no valor que o
-    editor tinha quando foi aberto (concorrência otimista). Substitui o antigo
-    DELETE do mês inteiro + INSERT: aquele padrão apagava qualquer turno
-    assumido por outro usuário (calendário rápido) enquanto o editor estava
-    aberto, porque reescrevia o mês inteiro a partir de um snapshot desatualizado.
-
-    changes: lista de (data, turno, snap_doctor_id, snap_doctor_name, novo_nome)
-    Retorna (aplicadas, conflitos).
-    """
-    aplicadas = []
-    conflitos = []
-
-    def _run(conn):
-        with conn.cursor() as cur:
-            for dt, turno, snap_id, snap_name, new_name in changes:
-                ok = False
-                if new_name == "":
-                    if snap_id is not None:
-                        cur.execute(
-                            "DELETE FROM shift_schedule WHERE shift_date=%s AND shift_time=%s AND doctor_id=%s RETURNING doctor_id",
-                            (dt, turno, snap_id),
-                        )
-                    else:
-                        cur.execute(
-                            "DELETE FROM shift_schedule WHERE shift_date=%s AND shift_time=%s AND doctor_id IS NULL AND doctor_name=%s RETURNING doctor_id",
-                            (dt, turno, snap_name),
-                        )
-                    ok = cur.fetchone() is not None
-                else:
-                    new_id = id_by_name.get(new_name)
-                    if snap_id is not None:
-                        cur.execute(
-                            "UPDATE shift_schedule SET doctor_id=%s, doctor_name=%s WHERE shift_date=%s AND shift_time=%s AND doctor_id=%s RETURNING doctor_id",
-                            (new_id, new_name, dt, turno, snap_id),
-                        )
-                        ok = cur.fetchone() is not None
-                    elif snap_name:
-                        cur.execute(
-                            "UPDATE shift_schedule SET doctor_id=%s, doctor_name=%s WHERE shift_date=%s AND shift_time=%s AND doctor_id IS NULL AND doctor_name=%s RETURNING doctor_id",
-                            (new_id, new_name, dt, turno, snap_name),
-                        )
-                        ok = cur.fetchone() is not None
-                    else:
-                        cur.execute(
-                            "INSERT INTO shift_schedule (shift_date, shift_time, doctor_id, doctor_name) VALUES (%s,%s,%s,%s) ON CONFLICT (shift_date, shift_time) DO NOTHING RETURNING doctor_id",
-                            (dt, turno, new_id, new_name),
-                        )
-                        ok = cur.fetchone() is not None
-
-                if ok:
-                    aplicadas.append((dt, turno, new_name))
-                else:
-                    cur.execute(
-                        """
-                        SELECT COALESCE(d.name, s.doctor_name)
-                        FROM shift_schedule s LEFT JOIN doctors d ON d.id = s.doctor_id
-                        WHERE s.shift_date=%s AND s.shift_time=%s;
-                        """,
-                        (dt, turno),
-                    )
-                    row = cur.fetchone()
-                    atual = row[0] if row else "vazio"
-                    conflitos.append((dt, turno, snap_name or "vazio", new_name or "vazio", atual))
-
-    _with_connection(_run, transactional=True)
-    fetch_month_schedule.clear()
-    return aplicadas, conflitos
-
-
-def edited_grid_to_map(all_edits, ano, mes):
-    """Mapa (data, turno) -> nome ('' quando vazio) para TODAS as células do
-    editor, preenchidas ou não. Necessário pro diff em apply_admin_diff, que
-    precisa saber tanto do que foi preenchido quanto do que foi apagado."""
-    edited = {}
-    for week_idx, (days, ed) in enumerate(all_edits):
-        for idx, day in enumerate(days):
-            if day <= 0:
-                continue
-            dt = datetime.date(ano, mes, day)
-            for row_idx, turno in enumerate(TURNOS):
-                col = f"w{week_idx}_d{idx}"
-                val = ed.at[row_idx, col]
-                nome = "" if pd.isna(val) else str(val).strip()
-                edited[(dt, turno)] = nome
-    return edited
-
-
+# =================================================================
+# BACKUP
+# =================================================================
 BACKUP_TABLES = {
     'doctors.csv': "SELECT id,name,ativo FROM doctors ORDER BY id",
     'shift_schedule.csv': "SELECT shift_date,shift_time,doctor_id,doctor_name FROM shift_schedule ORDER BY shift_date,shift_time",
@@ -865,23 +796,7 @@ if not st.session_state['auth']:
 # =================================================================
 # ESTADO / NAVEGAÇÃO
 # =================================================================
-try:
-    df_docs = fetch_doctors()
-except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:
-    # Falha de conexão com o banco DEPOIS do login não tinha nenhum tratamento
-    # aqui -- qualquer soluço (banco sob carga, pooler indisponível, rede)
-    # derrubava a página inteira com stack trace cru pro usuário. Ver
-    # conversa: erro real observado foi EAUTHQUERY / timeout por saturação
-    # de Disk IO no Supabase (compute nano).
-    get_db_pool.clear()
-    st.error("🚨 Sem conexão com o banco de dados no momento.")
-    st.caption("O banco pode estar sob carga ou há uma instabilidade de rede temporária. Tente novamente em instantes.")
-    with st.expander("Detalhes técnicos"):
-        st.code(str(e))
-    if st.button("🔄 Tentar novamente", type="primary"):
-        st.rerun()
-    st.stop()
-
+df_docs = fetch_doctors()
 if not df_docs.empty:
     df_docs['ativo'] = df_docs['ativo'].fillna(False).astype(bool)
 active_names = df_docs[df_docs['ativo']]['name'].tolist() if not df_docs.empty else []
@@ -914,11 +829,7 @@ def _shift_period(delta):
 def _ir_para_hoje():
     st.session_state['period_month']=hoje.month; st.session_state['period_year']=hoje.year; _period_changed()
 
-def _toggle_scale_edit(ano_atual=None, mes_atual=None):
-    novo = not st.session_state['scale_edit_mode']
-    if not novo and ano_atual is not None and mes_atual is not None:
-        st.session_state.pop(f"scale_edit_snapshot_{ano_atual}_{mes_atual}", None)
-    st.session_state['scale_edit_mode'] = novo
+def _toggle_scale_edit(): st.session_state['scale_edit_mode']=not st.session_state['scale_edit_mode']
 
 def _toggle_pattern_preview(): st.session_state['show_pattern_preview']=not st.session_state['show_pattern_preview']
 
@@ -1074,10 +985,13 @@ if page=='📅 Escala':
         st.info("Escolha seu nome em **Eu sou** para assumir um turno vazio com um toque."); render_readonly_calendar(pivot,ano,mes_num)
     cobertura=filled/total*100 if total else 0; st.markdown(f"<div class='month-summary'>{filled}/{total} turnos cobertos · {max(total-filled,0)} sem médico · {cobertura:.0f}% de cobertura</div>",unsafe_allow_html=True)
     with st.expander('⚙️ Administração e ferramentas'):
-        a,b=st.columns(2); a.button('✨ Aplicar Padrão Rotativo',use_container_width=True,on_click=_toggle_pattern_preview); b.button('✏️ Editar escala completa',use_container_width=True,on_click=_toggle_scale_edit,args=(ano,mes_num))
+        a,b=st.columns(2); a.button('✨ Aplicar Padrão Rotativo',use_container_width=True,on_click=_toggle_pattern_preview); b.button('✏️ Editar escala completa',use_container_width=True,on_click=_toggle_scale_edit)
     if st.session_state['show_pattern_preview']:
-        anchor=get_rotation_anchor(); fix=fetch_fixed_pattern(); desired=build_pattern_assignments(ano,mes_num,fix,anchor)
-        st.subheader('Prévia do padrão rotativo'); st.caption(f"Ciclo ancorado em {anchor.strftime('%d/%m/%Y')}.")
+        fix=fetch_fixed_pattern(); desired=build_pattern_assignments(ano,mes_num,fix)
+        st.subheader('Prévia do padrão rotativo')
+        st.caption('O ciclo reinicia em **Semana 1 no começo de cada mês**. Semanas 5 e 6 repetem Semana 1 e Semana 2.')
+        resumo_semana = rotation_month_summary(ano, mes_num)
+        st.markdown(' · '.join([f"Linha {linha}: **Semana {semana}** ({inicio:02d}–{fim:02d})" for linha,semana,inicio,fim in resumo_semana]))
         current_map={(pd.Timestamp(r['shift_date']).date(),r['shift_time']):r['doctor_name'] for _,r in df_raw.iterrows()}
         desired_map={(r[0],r[1]):r[3] for r in desired}
         keys=set(current_map)|set(desired_map)
@@ -1090,63 +1004,18 @@ if page=='📅 Escala':
         if st.checkbox('Estou ciente. Substituir a escala deste mês pelo padrão.') and st.button('Aplicar padrão ao mês',type='primary'):
             ini,fim=month_bounds(ano,mes_num); execute_transacional([('DELETE FROM shift_schedule WHERE shift_date >= %s AND shift_date < %s',(ini,fim)),('INSERT INTO shift_schedule(shift_date,shift_time,doctor_id,doctor_name) VALUES %s',desired)]); st.session_state['show_pattern_preview']=False; st.rerun()
     if st.session_state['scale_edit_mode']:
-        st.subheader('✏️ Edição administrativa da escala')
-        st.caption(
-            "Use este editor apenas para alterações em lote. Ao salvar, só as células que você de fato "
-            "alterar aqui são gravadas — turnos assumidos por outros usuários enquanto este editor estava "
-            "aberto não são apagados."
-        )
-        # Snapshot capturado no instante em que o editor é aberto: é contra ele
-        # que o "Salvar" compara o que foi editado, e contra ele que cada
-        # gravação é condicionada (concorrência otimista) — ver apply_admin_diff.
-        snapshot_key = f"scale_edit_snapshot_{ano}_{mes_num}"
-        if snapshot_key not in st.session_state:
-            snap = {}
-            for _, r in df_raw.iterrows():
-                dt_snap = pd.Timestamp(r['shift_date']).date()
-                did = None if pd.isna(r.get('doctor_id')) else int(r['doctor_id'])
-                snap[(dt_snap, r['shift_time'])] = (did, str(r['doctor_name']))
-            st.session_state[snapshot_key] = snap
-        snapshot_map = st.session_state[snapshot_key]
-
-        calendar.setfirstweekday(calendar.MONDAY); weeks=calendar.monthcalendar(ano,mes_num); existing=df_raw['doctor_name'].dropna().tolist() if not df_raw.empty else []; opts=['']+sorted(set(active_names+existing)); edits=[]
+        st.subheader('✏️ Edição administrativa da escala'); calendar.setfirstweekday(calendar.MONDAY); weeks=calendar.monthcalendar(ano,mes_num); existing=df_raw['doctor_name'].dropna().tolist() if not df_raw.empty else []; opts=['']+sorted(set(active_names+existing)); edits=[]
         for i,week in enumerate(weeks):
             data={f'w{i}_d{idx}':(['','',''] if day==0 else [pivot.at[t,day] for t in TURNOS]) for idx,day in enumerate(week)}; dfw=pd.DataFrame(data,index=TURNOS).reset_index().rename(columns={'index':'Turno'}); conf={'Turno':st.column_config.TextColumn('Turno',disabled=True)}
             for idx,day in enumerate(week): conf[f'w{i}_d{idx}']=st.column_config.TextColumn(DIAS_SEMANA_CURTO[idx],disabled=True) if day==0 else st.column_config.SelectboxColumn(f'{DIAS_SEMANA_CURTO[idx]} {day:02d}',options=opts)
             ed=st.data_editor(dfw,column_config=conf,hide_index=True,use_container_width=True,key=f'edit_{i}_{ano}_{mes_num}'); edits.append((week,ed))
         if st.button('💾 Salvar escala deste mês',type='primary'):
-            edited_map = edited_grid_to_map(edits, ano, mes_num)
-            changes = []
-            nomes_invalidos = set()
-            for key in set(snapshot_map) | set(edited_map):
-                snap_id, snap_name = snapshot_map.get(key, (None, ""))
-                new_name = edited_map.get(key, snap_name)
-                if new_name == snap_name:
-                    continue
-                if new_name and new_name not in id_by_name:
-                    nomes_invalidos.add(new_name)
-                    continue
-                changes.append((key[0], key[1], snap_id, snap_name, new_name))
-
-            if nomes_invalidos:
-                st.error(f"Médico(s) não encontrado(s): {', '.join(sorted(nomes_invalidos))}. Nada foi salvo.")
-            elif not changes:
-                st.info("Nenhuma alteração para salvar.")
-            else:
-                aplicadas, conflitos = apply_admin_diff(changes, id_by_name)
-                if conflitos:
-                    st.warning(f"{len(conflitos)} célula(s) não foram salvas porque mudaram entre a abertura do editor e agora:")
-                    for dt_c, turno_c, esperado, tentativa, atual_c in conflitos:
-                        st.caption(f"- {dt_c.strftime('%d/%m')} {turno_c}: você viu **{esperado}**, tentou **{tentativa}**, mas está com **{atual_c}**. Reabra o editor para revisar.")
-                if aplicadas:
-                    st.success(f"{len(aplicadas)} turno(s) atualizado(s).")
-                st.session_state['scale_edit_mode']=False
-                st.session_state.pop(snapshot_key, None)
-                st.rerun()
+            rows=[]
+            for dt,t,n in current_state_from_edits(edits,ano,mes_num): rows.append((dt,t,id_by_name[n],n))
+            ini,fim=month_bounds(ano,mes_num); execute_transacional([('DELETE FROM shift_schedule WHERE shift_date >= %s AND shift_date < %s',(ini,fim)),('INSERT INTO shift_schedule(shift_date,shift_time,doctor_id,doctor_name) VALUES %s',rows)]); st.session_state['scale_edit_mode']=False; st.rerun()
 
 elif page=='🔄 Trocas':
     render_period_selector(); mes_num=int(st.session_state['period_month']); ano=int(st.session_state['period_year']); st.header('🔄 Trocas de plantão')
-    st.caption("Usa as mesmas travas do calendário rápido: cada troca/substituição só é aplicada se o plantão ainda estiver como você viu na tela.")
     df=fetch_month_schedule(ano,mes_num)
     if df.empty: st.info('Não há plantões neste mês.')
     else:
@@ -1154,38 +1023,20 @@ elif page=='🔄 Trocas':
         with t1:
             a=st.selectbox('Plantão A',list(labels),format_func=lambda x:labels[x]); opts=[x for x in labels if x!=a]; b=st.selectbox('Plantão B',opts,format_func=lambda x:labels[x]) if opts else None
             if b is not None and st.button('🔄 Confirmar troca',type='primary'):
-                ra,rb=df.loc[a],df.loc[b]
-                dt_a = pd.Timestamp(ra['shift_date']).date(); dt_b = pd.Timestamp(rb['shift_date']).date()
-                id_a = None if pd.isna(ra.get('doctor_id')) else int(ra['doctor_id'])
-                id_b = None if pd.isna(rb.get('doctor_id')) else int(rb['doctor_id'])
-                if id_a is None or id_b is None:
-                    st.error("Um dos plantões não tem médico com ID resolvido (registro legado). Corrija em Equipe antes de trocar.")
-                else:
-                    ok, msg = swap_with_my_shift_atomic(dt_b, rb['shift_time'], id_b, dt_a, ra['shift_time'], id_a)
-                    if ok:
-                        st.success(msg); st.rerun()
-                    else:
-                        st.warning(f"Troca não realizada: {msg}")
+                ra,rb=df.loc[a],df.loc[b]; execute_transacional([('UPDATE shift_schedule SET doctor_id=%s,doctor_name=%s WHERE shift_date=%s AND shift_time=%s',(int(rb['doctor_id']),rb['doctor_name'],ra['shift_date'],ra['shift_time'])),('UPDATE shift_schedule SET doctor_id=%s,doctor_name=%s WHERE shift_date=%s AND shift_time=%s',(int(ra['doctor_id']),ra['doctor_name'],rb['shift_date'],rb['shift_time']))]); st.rerun()
         with t2:
             idx=st.selectbox('Plantão',list(labels),format_func=lambda x:labels[x]); atual=df.loc[idx]; candidatos=[n for n in active_names if n!=atual['doctor_name']]; novo=st.selectbox('Novo médico',candidatos) if candidatos else None
-            if novo and st.button('Substituir médico',type='primary'):
-                dt_atual = pd.Timestamp(atual['shift_date']).date()
-                atual_id = None if pd.isna(atual.get('doctor_id')) else int(atual['doctor_id'])
-                ok, resultado = replace_occupied_shift_atomic(dt_atual, atual['shift_time'], atual_id, atual['doctor_name'], id_by_name[novo], novo)
-                if ok:
-                    st.success("Substituição realizada."); st.rerun()
-                else:
-                    st.warning(f"Não foi possível substituir: o plantão já está com {resultado}.")
+            if novo and st.button('Substituir médico',type='primary'): execute_query('UPDATE shift_schedule SET doctor_id=%s,doctor_name=%s WHERE shift_date=%s AND shift_time=%s',(id_by_name[novo],novo,atual['shift_date'],atual['shift_time'])); st.rerun()
 
 elif page=='🔁 Padrão Rotativo':
-    st.header('🔁 Padrão Rotativo'); anchor=get_rotation_anchor(); nova=st.date_input('Segunda-feira de início da Semana 1',value=anchor)
-    anchor_preview=nova-datetime.timedelta(days=nova.weekday())
-    st.caption(f"Semana 1 começa em {anchor_preview.strftime('%d/%m/%Y')}; o ciclo segue continuamente 1 → 2 → 3 → 4.")
-    if st.button('Salvar data âncora'): set_rotation_anchor(nova); st.rerun()
+    st.header('🔁 Padrão Rotativo')
+    st.info('A rotação **reinicia todo mês**: a primeira linha do calendário é sempre Semana 1, depois Semana 2, 3 e 4. Se houver uma quinta ou sexta linha, ela repete Semana 1 e Semana 2.')
+    st.caption(f'Exemplo em {MESES[int(st.session_state["period_month"])-1]} {int(st.session_state["period_year"])}:')
+    exemplo = rotation_month_summary(int(st.session_state['period_year']), int(st.session_state['period_month']))
+    st.markdown(' · '.join([f"Linha {linha}: **Semana {semana}** ({inicio:02d}–{fim:02d})" for linha,semana,inicio,fim in exemplo]))
     raw=fetch_fixed_pattern(); pattern_opts=['']+sorted(set(active_names+(raw['doctor_name'].dropna().tolist() if not raw.empty else []))); edits=[]
     for w in range(4):
-        week_start=anchor_preview+datetime.timedelta(days=7*w); week_end=week_start+datetime.timedelta(days=6)
-        st.markdown(f"#### Semana {w+1} · {week_start.strftime('%d/%m')}–{week_end.strftime('%d/%m')}")
+        st.markdown(f"#### Semana {w+1}")
         part=raw[raw['week_num']==w] if not raw.empty else pd.DataFrame(); piv=part.pivot(index='shift_time',columns='weekday',values='doctor_name').reindex(TURNOS).reindex(columns=range(7)).fillna('') if not part.empty else pd.DataFrame('',index=TURNOS,columns=range(7)); piv.columns=[str(c) for c in range(7)]; conf={str(c):st.column_config.SelectboxColumn(DIAS_SEMANA[c],options=pattern_opts) for c in range(7)}; ed=st.data_editor(piv,column_config=conf,use_container_width=True,key=f'pat_{w}'); edits.append((w,ed))
     if st.button('💾 Salvar padrão rotativo',type='primary'):
         rows=[]
