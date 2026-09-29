@@ -11,6 +11,7 @@ import io
 import json
 import zipfile
 import html
+import time
 from fpdf import FPDF
 
 st.set_page_config(
@@ -45,40 +46,101 @@ def _database_url():
 @st.cache_resource
 def get_db_pool():
     return ThreadedConnectionPool(
-        minconn=1, maxconn=8, dsn=_database_url(),
-        options="-c client_encoding=utf8", connect_timeout=10,
+        minconn=1,
+        maxconn=8,
+        dsn=_database_url(),
+        options="-c client_encoding=utf8",
+        connect_timeout=10,
+        # Ajuda o sistema operacional a perceber sockets mortos antes de o app reutilizá-los.
+        keepalives=1,
+        keepalives_idle=30,
+        keepalives_interval=10,
+        keepalives_count=3,
+        application_name="hospital_help_escala",
     )
 
 
+_CONNECTION_LOST_MARKERS = (
+    "server closed the connection unexpectedly",
+    "connection already closed",
+    "connection not open",
+    "ssl connection has been closed unexpectedly",
+    "terminating connection due to administrator command",
+    "could not receive data from server",
+    "connection reset by peer",
+    "eof detected",
+    "the database system is starting up",
+    "the database system is shutting down",
+)
+
+
+def _is_lost_connection(exc, conn=None):
+    """Distingue queda de conexão de erros SQL normais, que não devem ser repetidos."""
+    if isinstance(exc, (psycopg2.OperationalError, psycopg2.InterfaceError)):
+        return True
+    if conn is not None and getattr(conn, "closed", 0):
+        return True
+    msg = str(exc).lower()
+    return any(marker in msg for marker in _CONNECTION_LOST_MARKERS)
+
+
 def _with_connection(callback, transactional=False):
+    """Usa o pool e se recupera de conexões mortas após pausa/restart do Supabase.
+
+    Uma conexão que morreu no servidor pode continuar parecendo aberta no cliente até
+    a próxima consulta. Por isso fazemos um SELECT 1 antes do trabalho real e
+    descartamos o socket do pool quando a conexão está inválida.
+    """
     last_exc = None
-    for attempt in range(2):
+    max_attempts = 5
+
+    for attempt in range(max_attempts):
         pool = get_db_pool()
         conn = None
         returned = False
         try:
             conn = pool.getconn()
+            if conn is None or getattr(conn, "closed", 1):
+                raise psycopg2.InterfaceError("Conexão do pool está fechada.")
+
             conn.autocommit = not transactional
+
+            # Detecta imediatamente uma conexão que ficou morta no pool.
+            with conn.cursor() as ping_cur:
+                ping_cur.execute("SELECT 1")
+
             result = callback(conn)
             if transactional:
                 conn.commit()
             return result
-        except (psycopg2.OperationalError, psycopg2.InterfaceError) as exc:
+
+        except psycopg2.Error as exc:
+            retryable = _is_lost_connection(exc, conn)
             last_exc = exc
+
+            if transactional and conn is not None and not getattr(conn, "closed", 1):
+                try:
+                    conn.rollback()
+                except Exception:
+                    retryable = True
+
+            if not retryable:
+                raise
+
+            # Nunca devolve uma conexão quebrada ao pool.
             if conn is not None:
                 try:
                     pool.putconn(conn, close=True)
                     returned = True
                 except Exception:
                     pass
-            if attempt == 0:
-                get_db_pool.clear()
+
+            if attempt < max_attempts - 1:
+                # Pequena espera para cobrir restart/wake-up transitório do Supabase.
+                time.sleep(min(0.8 * (attempt + 1), 2.5))
                 continue
             raise
-        except Exception:
-            if transactional and conn is not None:
-                conn.rollback()
-            raise
+
         finally:
             if conn is not None and not returned:
                 try:
@@ -86,7 +148,11 @@ def _with_connection(callback, transactional=False):
                         conn.autocommit = True
                     pool.putconn(conn)
                 except Exception:
-                    pass
+                    try:
+                        pool.putconn(conn, close=True)
+                    except Exception:
+                        pass
+
     if last_exc:
         raise last_exc
 
@@ -223,8 +289,13 @@ def init_db():
 try:
     init_db()
 except Exception as e:
-    st.error("🚨 Falha Crítica: Banco de Dados Inacessível.")
-    st.code(str(e))
+    st.error("☁️ O banco está temporariamente indisponível.")
+    st.caption("O Supabase pode estar reiniciando ou retomando o projeto. Aguarde alguns segundos e tente novamente.")
+    with st.expander("Detalhes técnicos"):
+        st.code(str(e))
+    if st.button("🔄 Tentar novamente", type="primary", use_container_width=True, key="retry_init_db"):
+        st.cache_data.clear()
+        st.rerun()
     st.stop()
 
 # =================================================================
@@ -796,7 +867,19 @@ if not st.session_state['auth']:
 # =================================================================
 # ESTADO / NAVEGAÇÃO
 # =================================================================
-df_docs = fetch_doctors()
+try:
+    df_docs = fetch_doctors()
+except psycopg2.Error as e:
+    st.error("☁️ A conexão com o Supabase caiu e ainda não conseguiu se restabelecer.")
+    st.caption("Isso pode acontecer logo após o projeto acordar/reiniciar. Nenhum dado foi apagado.")
+    with st.expander("Detalhes técnicos"):
+        st.code(str(e))
+    if st.button("🔄 Reconectar agora", type="primary", use_container_width=True, key="retry_fetch_doctors"):
+        fetch_doctors.clear()
+        st.cache_data.clear()
+        st.rerun()
+    st.stop()
+
 if not df_docs.empty:
     df_docs['ativo'] = df_docs['ativo'].fillna(False).astype(bool)
 active_names = df_docs[df_docs['ativo']]['name'].tolist() if not df_docs.empty else []
