@@ -756,6 +756,9 @@ def aplicar_estilo_visual():
     .identity-panel-anchor{display:none}.identity-panel-head{display:flex;align-items:center;gap:12px;padding:5px 2px 10px}.identity-icon{width:44px;height:44px;display:flex;align-items:center;justify-content:center;border-radius:12px;background:linear-gradient(135deg,#2563EB,#1D4ED8);font-size:1.25rem}.identity-eyebrow{color:#93C5FD;font-size:.64rem;font-weight:900;letter-spacing:.10em}.identity-title{color:#F8FAFC;font-size:1.25rem;font-weight:800}.identity-subtitle{color:#A8B6CC;font-size:.78rem}
     div[data-testid="stVerticalBlockBorderWrapper"]:has(.identity-panel-anchor){border:1px solid #3B82F6!important;background:linear-gradient(135deg,rgba(37,99,235,.16),rgba(17,26,41,.98))!important;box-shadow:0 0 0 1px rgba(59,130,246,.10),0 8px 26px rgba(37,99,235,.12)!important;padding:.35rem .45rem .5rem!important;margin:.25rem 0 1rem!important}
     div[data-testid="stVerticalBlockBorderWrapper"]:has(.identity-panel-anchor) [data-baseweb="select"]>div{min-height:52px!important;border:2px solid #3B82F6!important;background:#0B1526!important;font-size:1rem!important}
+    .personal-shift-count{display:flex;align-items:baseline;gap:8px;margin-top:8px;padding:8px 10px;border-radius:10px;background:rgba(37,99,235,.10);border:1px solid rgba(59,130,246,.22)}
+    .personal-shift-count-number{font-family:'JetBrains Mono',monospace;color:#93C5FD;font-size:1.25rem;font-weight:800;line-height:1}
+    .personal-shift-count-label{color:#D7E2F2;font-size:.82rem;font-weight:700}
 
     /* GRID UNIFORME DO CALENDÁRIO RÁPIDO — tamanho estrutural, não cosmético */
     [class*="st-key-calday_"] [data-testid="stVerticalBlockBorderWrapper"],
@@ -839,6 +842,8 @@ def aplicar_estilo_visual():
     .quick-self-slot .self-check{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:50%;background:#3B82F6;color:#FFF;font-size:.72rem;font-weight:900;flex:0 0 18px}
     .quick-self-slot .self-label{color:#F8FBFF;font-weight:800;font-size:.88rem;white-space:nowrap}
     .quick-day-spacer{height:40px!important;min-height:40px!important;max-height:40px!important;margin:0!important;padding:0!important;}
+    .personal-shift-total{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:.65rem .8rem;border-radius:10px;background:rgba(37,99,235,.10);border:1px solid rgba(59,130,246,.28);color:#A8B6CC;font-size:.86rem}
+    .personal-shift-total strong{color:#F8FAFC;font-size:1rem;font-weight:800;white-space:nowrap}
     .month-summary{color:#7B8AA3;font-size:.82rem;margin:.15rem 0 .6rem}
     .block-container{padding-top:.8rem!important}
     @media(max-width:700px){.block-container{padding-left:.65rem!important;padding-right:.65rem!important}.period-hero .title{font-size:1.45rem}}
@@ -867,7 +872,7 @@ if not st.session_state['auth']:
 # =================================================================
 # ADMINISTRAÇÃO / RH — ACESSO SEPARADO
 # =================================================================
-ADMIN_PAGES = {'👥 Equipe', '💰 Fechamento RH', '⚙️ Turnos e Valores', '💾 Backup'}
+ADMIN_PAGES = {'🔁 Padrão Rotativo', '👥 Equipe', '💰 Fechamento RH', '⚙️ Turnos e Valores', '💾 Backup'}
 
 
 def _secret_value(name):
@@ -905,9 +910,23 @@ def _unlock_admin():
     st.session_state['admin_password_input'] = ''
 
 
+def _unlock_admin_inline(input_key, error_key):
+    """Mesma autenticação administrativa usada em controles sensíveis da tela principal."""
+    password = st.session_state.get(input_key, '')
+    if _admin_password_ok(password):
+        st.session_state['admin_auth'] = True
+        st.session_state[error_key] = False
+    else:
+        st.session_state['admin_auth'] = False
+        st.session_state[error_key] = True
+    st.session_state[input_key] = ''
+
+
 def _lock_admin():
     st.session_state['admin_auth'] = False
     st.session_state['admin_login_error'] = False
+    st.session_state['scale_edit_mode'] = False
+    st.session_state['show_pattern_preview'] = False
     st.session_state.pop('rh_pdf', None)
     st.session_state.pop('rh_pdf_key', None)
     st.session_state.pop('backup', None)
@@ -994,12 +1013,11 @@ with st.sidebar:
 
 st.sidebar.markdown("<div class='nav-eyebrow'>Dia a dia</div>",unsafe_allow_html=True)
 nav_button('📅 Escala','nav_escala'); nav_button('🔄 Trocas','nav_trocas')
-st.sidebar.markdown("<div class='nav-eyebrow'>Planejamento</div>",unsafe_allow_html=True)
-nav_button('🔁 Padrão Rotativo','nav_padrao')
 
-# As áreas sensíveis só existem na navegação após autenticação administrativa.
+# Planejamento estrutural e áreas sensíveis só existem após autenticação administrativa.
 if st.session_state.get('admin_auth'):
     st.sidebar.markdown("<div class='nav-eyebrow'>Administração / RH</div>",unsafe_allow_html=True)
+    nav_button('🔁 Padrão Rotativo','nav_padrao')
     nav_button('👥 Equipe','nav_equipe')
     nav_button('💰 Fechamento RH','nav_rh')
     nav_button('⚙️ Turnos e Valores','nav_turnos')
@@ -1009,9 +1027,9 @@ if st.session_state.get('admin_auth'):
 else:
     st.sidebar.markdown("<div class='nav-eyebrow'>Acesso restrito</div>",unsafe_allow_html=True)
     with st.sidebar.popover('🔐 Administração / RH', use_container_width=True):
-        st.caption('Equipe, valores, fechamento financeiro e backup são restritos.')
+        st.caption('Padrão rotativo, edição completa, equipe, valores, fechamento financeiro e backup são restritos.')
         if not (_secret_value('ADMIN_PASSWORD_HASH') or _secret_value('ADMIN_PASSWORD')):
-            st.warning('Configure ADMIN_PASSWORD_HASH ou ADMIN_PASSWORD nos Secrets para habilitar o acesso administrativo.')
+            st.warning('Configure ADMIN_PASSWORD_HASH ou ADMIN_PASSWORD nas Variables do Railway para habilitar o acesso administrativo.')
         st.text_input('Senha administrativa', type='password', key='admin_password_input', placeholder='Senha do Administrador/RH')
         st.button('Desbloquear', type='primary', use_container_width=True, key='admin_unlock_btn', on_click=_unlock_admin)
         if st.session_state.get('admin_login_error'):
@@ -1136,17 +1154,67 @@ if page=='📅 Escala':
     st.markdown("<div class='turno-legend'><div class='item'><span class='dot dot-manha'></span>Manhã</div><div class='item'><span class='dot dot-tarde'></span>Tarde</div><div class='item'><span class='dot dot-noite'></span>Noite</div></div>",unsafe_allow_html=True)
     if medico:
         render_quick_claim_calendar(df_raw,ano,mes_num,medico,id_by_name[medico])
-        pessoal=df_raw[df_raw['doctor_name']==medico].copy().sort_values('shift_date')
-        with st.expander(f"📅 Meus plantões · {len(pessoal)} neste mês"):
-            if not pessoal.empty:
-                view=pessoal.copy(); view['Data']=pd.to_datetime(view['shift_date']).dt.strftime('%d/%m/%Y'); view=view.rename(columns={'shift_time':'Turno'}); st.dataframe(view[['Data','Turno']],hide_index=True,use_container_width=True)
-                st.download_button('📅 Adicionar ao meu calendário (.ics)',data=generate_ics(pessoal,medico,get_shift_types()),file_name=f'Plantoes_{medico}_{mes_nome}_{ano}.ics',mime='text/calendar',use_container_width=True)
     else:
         st.info("Escolha seu nome em **Eu sou** para assumir um turno vazio com um toque."); render_readonly_calendar(pivot,ano,mes_num)
+
+    # Resumo pessoal: mantém a lista detalhada e mostra o total no final.
+    if medico:
+        df_pessoal = df_raw[df_raw['doctor_name'] == medico].copy().sort_values(['shift_date','shift_time'])
+        qtd_plantao = int(len(df_pessoal))
+        with st.expander(f"📅 Meus plantões · {qtd_plantao} neste mês"):
+            if df_pessoal.empty:
+                st.caption(f"Nenhum plantão de {medico} em {mes_nome}/{ano}.")
+            else:
+                lista_pessoal = df_pessoal.copy()
+                lista_pessoal['Data'] = pd.to_datetime(lista_pessoal['shift_date']).dt.strftime('%d/%m/%Y')
+                lista_pessoal['Dia'] = pd.to_datetime(lista_pessoal['shift_date']).dt.weekday.map(lambda x: DIAS_SEMANA_CURTO[int(x)])
+                lista_pessoal = lista_pessoal.rename(columns={'shift_time':'Turno'})
+                st.dataframe(lista_pessoal[['Dia','Data','Turno']], hide_index=True, use_container_width=True)
+
+                shift_types_df_ics = get_shift_types()
+                ics_bytes = generate_ics(df_pessoal, medico, shift_types_df_ics)
+                st.download_button(
+                    "📅 Adicionar meus plantões ao calendário (.ics)",
+                    data=ics_bytes,
+                    file_name=f"Plantões_{medico}_{mes_nome}_{ano}.ics",
+                    mime="text/calendar",
+                    use_container_width=True,
+                    key=f"ics_{ano}_{mes_num}_{id_by_name[medico]}",
+                )
+
+            st.divider()
+            st.markdown(
+                f"<div class='personal-shift-total'><span>Total no mês</span><strong>{qtd_plantao} plantão{'ões' if qtd_plantao != 1 else ''}</strong></div>",
+                unsafe_allow_html=True,
+            )
+
     cobertura=filled/total*100 if total else 0; st.markdown(f"<div class='month-summary'>{filled}/{total} turnos cobertos · {max(total-filled,0)} sem médico · {cobertura:.0f}% de cobertura</div>",unsafe_allow_html=True)
     with st.expander('⚙️ Administração e ferramentas'):
-        a,b=st.columns(2); a.button('✨ Aplicar Padrão Rotativo',use_container_width=True,on_click=_toggle_pattern_preview); b.button('✏️ Editar escala completa',use_container_width=True,on_click=_toggle_scale_edit)
-    if st.session_state['show_pattern_preview']:
+        if st.session_state.get('admin_auth'):
+            st.success('🔓 Modo Administrador/RH ativo')
+            a,b=st.columns(2)
+            a.button('✨ Aplicar Padrão Rotativo',use_container_width=True,on_click=_toggle_pattern_preview)
+            b.button('✏️ Editar escala completa',use_container_width=True,on_click=_toggle_scale_edit)
+        else:
+            st.info('🔒 Aplicar o padrão rotativo e editar a escala completa são ações administrativas.')
+            st.text_input(
+                'Senha administrativa', type='password', key='admin_scale_password',
+                placeholder='Senha do Administrador/RH'
+            )
+            st.button(
+                '🔓 Desbloquear ferramentas administrativas', type='primary', use_container_width=True,
+                key='admin_scale_unlock', on_click=_unlock_admin_inline,
+                args=('admin_scale_password','admin_scale_login_error')
+            )
+            if st.session_state.get('admin_scale_login_error'):
+                st.error('Senha administrativa incorreta.')
+
+    # Proteção no servidor/session_state: não basta esconder os botões.
+    if not st.session_state.get('admin_auth'):
+        st.session_state['show_pattern_preview'] = False
+        st.session_state['scale_edit_mode'] = False
+
+    if st.session_state.get('admin_auth') and st.session_state['show_pattern_preview']:
         fix=fetch_fixed_pattern(); desired=build_pattern_assignments(ano,mes_num,fix)
         st.subheader('Prévia do padrão rotativo')
         st.caption('O ciclo reinicia em **Semana 1 no começo de cada mês**. Semanas 5 e 6 repetem Semana 1 e Semana 2.')
@@ -1163,7 +1231,7 @@ if page=='📅 Escala':
         if alterados or vazios: st.warning('Edições manuais divergentes do padrão serão substituídas.')
         if st.checkbox('Estou ciente. Substituir a escala deste mês pelo padrão.') and st.button('Aplicar padrão ao mês',type='primary'):
             ini,fim=month_bounds(ano,mes_num); execute_transacional([('DELETE FROM shift_schedule WHERE shift_date >= %s AND shift_date < %s',(ini,fim)),('INSERT INTO shift_schedule(shift_date,shift_time,doctor_id,doctor_name) VALUES %s',desired)]); st.session_state['show_pattern_preview']=False; st.rerun()
-    if st.session_state['scale_edit_mode']:
+    if st.session_state.get('admin_auth') and st.session_state['scale_edit_mode']:
         st.subheader('✏️ Edição administrativa da escala'); calendar.setfirstweekday(calendar.MONDAY); weeks=calendar.monthcalendar(ano,mes_num); existing=df_raw['doctor_name'].dropna().tolist() if not df_raw.empty else []; opts=['']+sorted(set(active_names+existing)); edits=[]
         for i,week in enumerate(weeks):
             data={f'w{i}_d{idx}':(['','',''] if day==0 else [pivot.at[t,day] for t in TURNOS]) for idx,day in enumerate(week)}; dfw=pd.DataFrame(data,index=TURNOS).reset_index().rename(columns={'index':'Turno'}); conf={'Turno':st.column_config.TextColumn('Turno',disabled=True)}
@@ -1188,7 +1256,7 @@ elif page=='🔄 Trocas':
             idx=st.selectbox('Plantão',list(labels),format_func=lambda x:labels[x]); atual=df.loc[idx]; candidatos=[n for n in active_names if n!=atual['doctor_name']]; novo=st.selectbox('Novo médico',candidatos) if candidatos else None
             if novo and st.button('Substituir médico',type='primary'): execute_query('UPDATE shift_schedule SET doctor_id=%s,doctor_name=%s WHERE shift_date=%s AND shift_time=%s',(id_by_name[novo],novo,atual['shift_date'],atual['shift_time'])); st.rerun()
 
-elif page=='🔁 Padrão Rotativo':
+elif page=='🔁 Padrão Rotativo' and st.session_state.get('admin_auth'):
     st.header('🔁 Padrão Rotativo')
     st.info('A rotação **reinicia todo mês**: a primeira linha do calendário é sempre Semana 1, depois Semana 2, 3 e 4. Se houver uma quinta ou sexta linha, ela repete Semana 1 e Semana 2.')
     st.caption(f'Exemplo em {MESES[int(st.session_state["period_month"])-1]} {int(st.session_state["period_year"])}:')
