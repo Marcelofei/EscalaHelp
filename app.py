@@ -865,6 +865,58 @@ if not st.session_state['auth']:
     st.stop()
 
 # =================================================================
+# ADMINISTRAÇÃO / RH — ACESSO SEPARADO
+# =================================================================
+ADMIN_PAGES = {'👥 Equipe', '💰 Fechamento RH', '⚙️ Turnos e Valores', '💾 Backup'}
+
+
+def _secret_value(name):
+    try:
+        return st.secrets[name]
+    except Exception:
+        return os.environ.get(name)
+
+
+def _admin_password_ok(password):
+    """Valida senha administrativa sem manter a senha em texto no código.
+
+    Preferência: ADMIN_PASSWORD_HASH com SHA-256.
+    Compatibilidade simples: ADMIN_PASSWORD em Secrets/Environment.
+    """
+    supplied = str(password or '')
+    expected_hash = _secret_value('ADMIN_PASSWORD_HASH')
+    if expected_hash:
+        return hashlib.sha256(supplied.encode('utf-8')).hexdigest() == str(expected_hash).strip().lower()
+    expected_plain = _secret_value('ADMIN_PASSWORD')
+    if expected_plain is not None:
+        return supplied == str(expected_plain)
+    return False
+
+
+def _unlock_admin():
+    password = st.session_state.get('admin_password_input', '')
+    if _admin_password_ok(password):
+        st.session_state['admin_auth'] = True
+        st.session_state['admin_login_error'] = False
+    else:
+        st.session_state['admin_auth'] = False
+        st.session_state['admin_login_error'] = True
+    # Callback pode limpar o valor antes do novo rerun sem manter a senha na sessão.
+    st.session_state['admin_password_input'] = ''
+
+
+def _lock_admin():
+    st.session_state['admin_auth'] = False
+    st.session_state['admin_login_error'] = False
+    st.session_state.pop('rh_pdf', None)
+    st.session_state.pop('rh_pdf_key', None)
+    st.session_state.pop('backup', None)
+    st.session_state.pop('pre_restore_backup', None)
+    if st.session_state.get('page') in ADMIN_PAGES:
+        st.session_state['page'] = '📅 Escala'
+
+
+# =================================================================
 # ESTADO / NAVEGAÇÃO
 # =================================================================
 try:
@@ -893,6 +945,7 @@ st.session_state.setdefault('period_year', hoje.year)
 st.session_state.setdefault('page', '📅 Escala')
 st.session_state.setdefault('scale_edit_mode', False)
 st.session_state.setdefault('show_pattern_preview', False)
+st.session_state.setdefault('admin_auth', False)
 
 
 def _set_page(label): st.session_state['page'] = label
@@ -938,11 +991,35 @@ def nav_button(label,key):
 with st.sidebar:
     st.markdown("<div class='sidebar-brand'><div class='badge'>HH</div><div><div class='nome'>Hospital HELP</div><div class='depto'>Radiologia</div></div></div>",unsafe_allow_html=True)
     st.divider()
+
 st.sidebar.markdown("<div class='nav-eyebrow'>Dia a dia</div>",unsafe_allow_html=True)
 nav_button('📅 Escala','nav_escala'); nav_button('🔄 Trocas','nav_trocas')
-st.sidebar.markdown("<div class='nav-eyebrow'>Planejamento</div>",unsafe_allow_html=True); nav_button('🔁 Padrão Rotativo','nav_padrao')
-st.sidebar.markdown("<div class='nav-eyebrow'>Gestão</div>",unsafe_allow_html=True); nav_button('👥 Equipe','nav_equipe'); nav_button('💰 Fechamento RH','nav_rh')
-st.sidebar.markdown("<div class='nav-eyebrow'>Configurações</div>",unsafe_allow_html=True); nav_button('⚙️ Turnos e Valores','nav_turnos'); nav_button('💾 Backup','nav_backup')
+st.sidebar.markdown("<div class='nav-eyebrow'>Planejamento</div>",unsafe_allow_html=True)
+nav_button('🔁 Padrão Rotativo','nav_padrao')
+
+# As áreas sensíveis só existem na navegação após autenticação administrativa.
+if st.session_state.get('admin_auth'):
+    st.sidebar.markdown("<div class='nav-eyebrow'>Administração / RH</div>",unsafe_allow_html=True)
+    nav_button('👥 Equipe','nav_equipe')
+    nav_button('💰 Fechamento RH','nav_rh')
+    nav_button('⚙️ Turnos e Valores','nav_turnos')
+    nav_button('💾 Backup','nav_backup')
+    st.sidebar.success('🔓 Modo Administrador/RH ativo')
+    st.sidebar.button('🔒 Bloquear administração', key='lock_admin', use_container_width=True, on_click=_lock_admin)
+else:
+    st.sidebar.markdown("<div class='nav-eyebrow'>Acesso restrito</div>",unsafe_allow_html=True)
+    with st.sidebar.popover('🔐 Administração / RH', use_container_width=True):
+        st.caption('Equipe, valores, fechamento financeiro e backup são restritos.')
+        if not (_secret_value('ADMIN_PASSWORD_HASH') or _secret_value('ADMIN_PASSWORD')):
+            st.warning('Configure ADMIN_PASSWORD_HASH ou ADMIN_PASSWORD nos Secrets para habilitar o acesso administrativo.')
+        st.text_input('Senha administrativa', type='password', key='admin_password_input', placeholder='Senha do Administrador/RH')
+        st.button('Desbloquear', type='primary', use_container_width=True, key='admin_unlock_btn', on_click=_unlock_admin)
+        if st.session_state.get('admin_login_error'):
+            st.error('Senha administrativa incorreta.')
+
+# Proteção no servidor: esconder botões não é suficiente.
+if st.session_state.get('page') in ADMIN_PAGES and not st.session_state.get('admin_auth'):
+    st.session_state['page'] = '📅 Escala'
 
 page=st.session_state['page']; mes_num=int(st.session_state['period_month']); ano=int(st.session_state['period_year']); mes_nome=MESES[mes_num-1]
 
@@ -1130,7 +1207,7 @@ elif page=='🔁 Padrão Rotativo':
                     if n: rows.append((w,wd,t,id_by_name[n],n))
         execute_transacional([('DELETE FROM fixed_schedule_4w',None),('INSERT INTO fixed_schedule_4w(week_num,weekday,shift_time,doctor_id,doctor_name) VALUES %s',rows)]); st.rerun()
 
-elif page=='👥 Equipe':
+elif page=='👥 Equipe' and st.session_state.get('admin_auth'):
     st.header('👥 Equipe médica')
     with st.form('add_doc',clear_on_submit=True):
         n=st.text_input('Nome do médico'); ok=st.form_submit_button('➕ Adicionar')
@@ -1154,14 +1231,14 @@ elif page=='👥 Equipe':
                         ('UPDATE fixed_schedule_4w SET doctor_name=%s WHERE doctor_id=%s',(novo_nome,int(rename_id))),
                     ]); st.success('Nome atualizado sem perder o histórico.'); st.rerun()
 
-elif page=='⚙️ Turnos e Valores':
+elif page=='⚙️ Turnos e Valores' and st.session_state.get('admin_auth'):
     st.header('⚙️ Turnos e valores'); df=get_shift_types(); edit=df.copy(); edit['start_time']=edit['start_time'].astype(str).str[:5]; edit['end_time']=edit['end_time'].astype(str).str[:5]; ed=st.data_editor(edit,hide_index=True,use_container_width=True,disabled=['name'])
     if st.button('💾 Salvar turnos e valores',type='primary'):
         ops=[]
         for _,r in ed.iterrows(): ops.append(('UPDATE shift_types SET start_time=%s::time,end_time=%s::time,value=%s WHERE name=%s',(r['start_time'],r['end_time'],float(r['value']),r['name'])))
         execute_transacional(ops); st.rerun()
 
-elif page=='💰 Fechamento RH':
+elif page=='💰 Fechamento RH' and st.session_state.get('admin_auth'):
     render_period_selector(); mes_num=int(st.session_state['period_month']); ano=int(st.session_state['period_year']); mes_nome=MESES[mes_num-1]; st.header(f'💰 Fechamento RH · {mes_nome} {ano}'); df=fetch_month_schedule(ano,mes_num); types=get_shift_types(); rows=[(pd.Timestamp(r['shift_date']).date(),r['shift_time'],r['doctor_name']) for _,r in df.iterrows()]; resumo=financial_summary_from_rows(rows,types); total=float(resumo['Total'].sum()) if not resumo.empty else 0; a,b,c=st.columns(3); a.metric('Custo da escala',f'R$ {total:,.2f}'); b.metric('Plantões',len(rows)); c.metric('Médicos',resumo['doctor_name'].nunique() if not resumo.empty else 0)
     if not resumo.empty:
         st.dataframe(resumo.rename(columns={'doctor_name':'Médico','Total_Plantões':'Plantões','Total':'Total (R$)'}),hide_index=True,use_container_width=True)
@@ -1174,7 +1251,7 @@ elif page=='💰 Fechamento RH':
             calendar.setfirstweekday(calendar.MONDAY); st.session_state['rh_pdf']=generate_pdf_semanal(calendar.monthcalendar(ano,mes_num),schedule_to_pivot(df,ano,mes_num),resumo,mes_nome,ano,types)
         if st.session_state.get('rh_pdf'): st.download_button('⬇️ Baixar PDF oficial',data=st.session_state['rh_pdf'],file_name=f'Fechamento_RH_Escala_{mes_nome}_{ano}.pdf',mime='application/pdf')
 
-elif page=='💾 Backup':
+elif page=='💾 Backup' and st.session_state.get('admin_auth'):
     st.header('💾 Backup e restauração')
     st.caption('O ZIP completo inclui equipe, escala, padrão rotativo, valores dos turnos e configurações.')
     if st.button('📦 Preparar backup completo',type='primary'): st.session_state['backup']=create_full_backup_zip()
