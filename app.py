@@ -1157,21 +1157,38 @@ if page=='📅 Escala':
     else:
         st.info("Escolha seu nome em **Eu sou** para assumir um turno vazio com um toque."); render_readonly_calendar(pivot,ano,mes_num)
 
-    # Resumo pessoal: mantém a lista detalhada e mostra o total no final.
+    # Resumo pessoal: lista detalhada + quantidade e valor total no mês.
     if medico:
         df_pessoal = df_raw[df_raw['doctor_name'] == medico].copy().sort_values(['shift_date','shift_time'])
         qtd_plantao = int(len(df_pessoal))
-        with st.expander(f"📅 Meus plantões · {qtd_plantao} neste mês"):
+        rotulo_qtd = f"{qtd_plantao} plantão" if qtd_plantao == 1 else f"{qtd_plantao} plantões"
+
+        with st.expander(f"📅 Meus plantões · {rotulo_qtd} neste mês"):
+            shift_types_df_ics = get_shift_types()
+            valor_por_turno = {
+                str(r['name']): float(r['value'] or 0)
+                for _, r in shift_types_df_ics.iterrows()
+            } if not shift_types_df_ics.empty else {}
+
             if df_pessoal.empty:
+                valor_total_mes = 0.0
                 st.caption(f"Nenhum plantão de {medico} em {mes_nome}/{ano}.")
             else:
                 lista_pessoal = df_pessoal.copy()
                 lista_pessoal['Data'] = pd.to_datetime(lista_pessoal['shift_date']).dt.strftime('%d/%m/%Y')
                 lista_pessoal['Dia'] = pd.to_datetime(lista_pessoal['shift_date']).dt.weekday.map(lambda x: DIAS_SEMANA_CURTO[int(x)])
                 lista_pessoal = lista_pessoal.rename(columns={'shift_time':'Turno'})
-                st.dataframe(lista_pessoal[['Dia','Data','Turno']], hide_index=True, use_container_width=True)
+                lista_pessoal['Valor_num'] = lista_pessoal['Turno'].map(valor_por_turno).fillna(0.0).astype(float)
+                valor_total_mes = float(lista_pessoal['Valor_num'].sum())
+                lista_pessoal['Valor'] = lista_pessoal['Valor_num'].map(
+                    lambda v: f"R$ {v:,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.')
+                )
+                st.dataframe(
+                    lista_pessoal[['Dia','Data','Turno','Valor']],
+                    hide_index=True,
+                    use_container_width=True,
+                )
 
-                shift_types_df_ics = get_shift_types()
                 ics_bytes = generate_ics(df_pessoal, medico, shift_types_df_ics)
                 st.download_button(
                     "📅 Adicionar meus plantões ao calendário (.ics)",
@@ -1182,11 +1199,11 @@ if page=='📅 Escala':
                     key=f"ics_{ano}_{mes_num}_{id_by_name[medico]}",
                 )
 
+            valor_total_fmt = f"R$ {valor_total_mes:,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.')
             st.divider()
-            st.markdown(
-                f"<div class='personal-shift-total'><span>Total no mês</span><strong>{qtd_plantao} plantão{'ões' if qtd_plantao != 1 else ''}</strong></div>",
-                unsafe_allow_html=True,
-            )
+            t1, t2 = st.columns(2)
+            t1.metric("Total de plantões no mês", rotulo_qtd)
+            t2.metric("Valor total no mês", valor_total_fmt)
 
     cobertura=filled/total*100 if total else 0; st.markdown(f"<div class='month-summary'>{filled}/{total} turnos cobertos · {max(total-filled,0)} sem médico · {cobertura:.0f}% de cobertura</div>",unsafe_allow_html=True)
     with st.expander('⚙️ Administração e ferramentas'):
