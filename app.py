@@ -499,21 +499,31 @@ def claim_shift_atomic(shift_date, shift_time, doctor_id, doctor_name):
     return result
 
 
-def replace_occupied_shift_atomic(shift_date, shift_time, expected_owner_id, expected_owner_name, doctor_id, doctor_name):
+def replace_occupied_shift_atomic(shift_date, shift_time, expected_owner_id, expected_owner_name, doctor_id, doctor_name, require_active=False):
     def _replace(conn):
         with conn.cursor() as cur:
+            if require_active:
+                # Confere o cadastro na mesma transação; não depende só do cache da UI.
+                cur.execute("SELECT name FROM doctors WHERE id=%s AND ativo=TRUE FOR SHARE",
+                            (int(doctor_id),))
+                selected = cur.fetchone()
+                if not selected:
+                    return False, "O médico selecionado não está mais ativo. Atualize a página."
+                selected_name = selected[0]
+            else:
+                selected_name = doctor_name
             if expected_owner_id is not None and not pd.isna(expected_owner_id):
                 cur.execute("""
                   UPDATE shift_schedule SET doctor_id=%s,doctor_name=%s
                   WHERE shift_date=%s AND shift_time=%s AND doctor_id=%s RETURNING doctor_id
-                """, (int(doctor_id), doctor_name, shift_date, shift_time, int(expected_owner_id)))
+                """, (int(doctor_id), selected_name, shift_date, shift_time, int(expected_owner_id)))
             else:
                 cur.execute("""
                   UPDATE shift_schedule SET doctor_id=%s,doctor_name=%s
                   WHERE shift_date=%s AND shift_time=%s AND doctor_id IS NULL AND doctor_name=%s RETURNING doctor_id
-                """, (int(doctor_id), doctor_name, shift_date, shift_time, expected_owner_name))
+                """, (int(doctor_id), selected_name, shift_date, shift_time, expected_owner_name))
             if cur.fetchone():
-                return True, doctor_name
+                return True, selected_name
             cur.execute("""
               SELECT COALESCE(d.name,s.doctor_name) FROM shift_schedule s
               LEFT JOIN doctors d ON d.id=s.doctor_id
@@ -1055,6 +1065,45 @@ def fixed_day_container(key):
             return st.container(border=True)
 
 
+def render_repassar_plantao(shift_date, shift_time, owner_id, owner_name, viewer_id):
+    key = f"repassar_{shift_date.isoformat()}_{shift_time}_{viewer_id}_{owner_id}_{owner_name}"
+    with st.expander('Repassar plantão'):
+        docs = fetch_doctors()
+        candidatos = {
+            int(r['id']): str(r['name']) for _, r in docs.iterrows()
+            if bool(r['ativo']) and (
+                int(r['id']) != owner_id if owner_id is not None else str(r['name']) != owner_name
+            )
+        }
+        if not candidatos:
+            st.info('Não há outros médicos ativos para receber este plantão.')
+            return
+        escolhido = st.selectbox(
+            'Médico que receberá o plantão', [None] + list(candidatos),
+            format_func=lambda x: 'Selecione um médico' if x is None else candidatos[x],
+            key=f'{key}_medico',
+        )
+        if escolhido is not None:
+            st.caption(f"{shift_date:%d/%m/%Y} · {shift_time}: {owner_name} → {candidatos[escolhido]}")
+        if st.button('Confirmar repasse', key=f'{key}_confirmar',
+                     disabled=escolhido is None, use_container_width=True):
+            ok, nome = replace_occupied_shift_atomic(
+                shift_date, shift_time, owner_id, owner_name,
+                escolhido, candidatos[escolhido], require_active=True,
+            )
+            if ok:
+                st.cache_data.clear()
+                st.session_state.pop('rh_pdf', None)
+                st.session_state.pop('rh_pdf_key', None)
+                st.session_state.pop('backup', None)
+            st.session_state['claim_flash'] = (
+                'success' if ok else 'warning',
+                f"Plantão de {shift_date:%d/%m/%Y} · {shift_time} repassado para {nome}."
+                if ok else f"Repasse não realizado. O plantão ou o cadastro mudou: {nome}",
+            )
+            st.rerun()
+
+
 def render_quick_claim_calendar(df_raw, ano, mes, doctor_name, doctor_id):
     calendar.setfirstweekday(calendar.MONDAY)
     weeks=calendar.monthcalendar(ano,mes)
@@ -1067,7 +1116,7 @@ def render_quick_claim_calendar(df_raw, ano, mes, doctor_name, doctor_id):
         for _,r in df_raw[df_raw['doctor_name']==doctor_name].sort_values(['shift_date','shift_time']).iterrows():
             meus.append((pd.Timestamp(r['shift_date']).date(),str(r['shift_time'])))
     emoji={'Manhã':'🌅','Tarde':'☀️','Noite':'🌙'}
-    st.caption("Toque em **+ Assumir** nas vagas. Toque no **nome de outro médico** para assumir ou trocar.")
+    st.caption("Toque em **+ Assumir** nas vagas. Toque em um **plantão ocupado** para ver as ações, incluindo **Repassar plantão**.")
     for week_idx,week in enumerate(weeks):
         cols=st.columns(7,gap='small')
         for wd,day in enumerate(week):
@@ -1093,7 +1142,9 @@ def render_quick_claim_calendar(df_raw, ano, mes, doctor_name, doctor_id):
                         if info:
                             atual=info['name']; atual_id=info['id']
                             if atual==doctor_name:
-                                st.markdown(f"<div class='quick-self-slot'><span class='self-emoji'>{em}</span><span class='self-check'>✓</span><span class='self-label'>Você</span></div>",unsafe_allow_html=True)
+                                with st.popover(f"{em} ✓ Você", use_container_width=True):
+                                    st.caption(f"{turno} · {day:02d}/{mes:02d} · atualmente com **{atual}**")
+                                    render_repassar_plantao(dt, turno, atual_id, atual, doctor_id)
                             else:
                                 with st.popover(f"{em} {atual}",use_container_width=True):
                                     st.caption(f"{turno} · {day:02d}/{mes:02d} · atualmente com **{atual}**")
@@ -1101,6 +1152,7 @@ def render_quick_claim_calendar(df_raw, ano, mes, doctor_name, doctor_id):
                                         ok,owner=replace_occupied_shift_atomic(dt,turno,atual_id,atual,doctor_id,doctor_name)
                                         st.session_state['claim_flash']=('success' if ok else 'warning', f"Você assumiu {turno.lower()} de {day:02d}/{mes:02d}." if ok else f"Não foi possível: o plantão agora está com {owner}.")
                                         st.rerun()
+                                    render_repassar_plantao(dt, turno, atual_id, atual, doctor_id)
                                     opcoes=[x for x in meus if x!=(dt,turno)]
                                     if opcoes:
                                         pick=st.selectbox('Trocar com um plantão meu',opcoes,format_func=lambda x:f"{x[0].strftime('%d/%m')} · {x[1]}",key=f'swap_pick_{ano}_{mes}_{day}_{turno}_{doctor_id}')
