@@ -28,7 +28,7 @@ class RulesTests(unittest.TestCase):
             ('13:00','internado',(day,'Noite')),
             ('18:44','internado',(day,'Noite')),
             ('23:59','internado',(day,'Noite')),
-            ('02:00','laudos',(day,'Laudos')),
+            ('02:00','laudos',(day+dt.timedelta(days=1),'Manhã')),
         ]:
             with self.subTest(time=time,kind=kind):
                 self.assertEqual(t.assignment_slot(self.moment(time),kind),expected)
@@ -38,15 +38,15 @@ class RulesTests(unittest.TestCase):
     def test_deadlines(self):
         day=dt.date(2026,11,25)
         shifts={(day,'Manhã'):'Médico manhã',(day,'Tarde'):'Médico tarde',(day,'Noite'):'Médico noite'}
-        daily={day:'Médico laudos'}
+        shifts[(day+dt.timedelta(days=1),'Manhã')]='Médico laudos'
         for priority,hours in [('Hosp Trauma',2),('Pronto Atendimento',2),('Urgente',6),('Internado',6),('Oncologia',96),('',120)]:
             with self.subTest(priority=priority):
-                out=t.build_tracker([self.record(priority)],shifts,daily,self.moment('11:00')).iloc[0]
+                out=t.build_tracker([self.record(priority)],shifts,'Otávio',self.moment('11:00')).iloc[0]
                 expected=self.moment('10:00')+dt.timedelta(hours=hours)
                 self.assertEqual(out['Vencimento'],expected.strftime('%d/%m/%Y %H:%M'))
                 self.assertEqual(out['Médico'],'Médico laudos' if priority in ('','Oncologia') else 'Médico manhã')
                 self.assertEqual(out['Situação'],'No prazo')
-        out=t.build_tracker([self.record('Internado','25/11/2026 13:00')],shifts,daily,self.moment('14:00')).iloc[0]
+        out=t.build_tracker([self.record('Internado','25/11/2026 13:00')],shifts,'Otávio',self.moment('14:00')).iloc[0]
         self.assertEqual(out['Médico'],'Médico noite')
     def test_late_missing_and_unknown(self):
         day=dt.date(2026,11,25)
@@ -92,6 +92,45 @@ class RulesTests(unittest.TestCase):
         self.assertEqual(t.whatsapp_deadline(-172800),'em atraso há 2 dias')
         self.assertEqual(t.whatsapp_deadline(3600),'faltam 1h 00min')
         self.assertEqual(t.whatsapp_deadline(0),'vence agora')
+
+    def test_reporting_weekday_reference_and_month_year_boundaries(self):
+        for source,reference,slot in [
+            ('2026-11-23','2026-11-23','Otávio'),
+            ('2026-11-24','2026-11-25','Manhã'),
+            ('2026-11-25','2026-11-26','Manhã'),
+            ('2026-11-26','2026-11-27','Manhã'),
+            ('2026-11-27','2026-11-30','Manhã'),
+            ('2026-11-28','2026-11-28','Manhã'),
+            ('2026-11-29','2026-11-29','Domingo — conferir'),
+            ('2026-10-30','2026-11-02','Manhã'),
+            ('2027-12-31','2028-01-03','Manhã'),
+        ]:
+            with self.subTest(source=source):
+                moment=dt.datetime.fromisoformat(source+'T10:00').replace(tzinfo=t.TZ)
+                self.assertEqual(t.reporting_slot(moment),(dt.date.fromisoformat(reference),slot))
+
+    def test_reporting_split_morning_afternoon_and_exceptional_hours(self):
+        reference=dt.date(2026,11,26)
+        shifts={(reference,'Manhã'):'Médico A',(reference,'Tarde'):'Médico B',(reference,'Noite'):'Noturno'}
+        for clock,expected in [('02:00','Médico A'),('06:59','Médico A'),('07:00','Médico A'),('12:59','Médico A'),('13:00','Médico B'),('18:59','Médico B'),('19:00','Médico B'),('23:59','Médico B')]:
+            with self.subTest(clock=clock):
+                self.assertEqual(t.reporting_owner(self.moment(clock),shifts,'Otávio')[0],expected)
+        single={(reference,'Manhã'):'Único'}
+        self.assertEqual(t.reporting_owner(self.moment('14:00'),single,'Otávio')[0],'Único')
+        self.assertIsNone(t.reporting_owner(self.moment('14:00'),{},'Otávio')[0])
+
+    def test_reporting_monday_fixed_sunday_flag_and_deadline_unchanged(self):
+        now=dt.datetime(2026,12,1,10,tzinfo=t.TZ)
+        for priority,hours in [('Oncologia',96),('',120)]:
+            record=self.record(priority,'23/11/2026 14:00')
+            out=t.build_tracker([record],{},'Otávio',now).iloc[0]
+            self.assertEqual(out['Médico'],'Otávio')
+            self.assertEqual(out['Vencimento'],(dt.datetime(2026,11,23,14)+dt.timedelta(hours=hours)).strftime('%d/%m/%Y %H:%M'))
+            self.assertEqual(t.build_tracker([record],{},None,now).iloc[0]['Situação'],'Conferir')
+            record=self.record(priority,'29/11/2026 10:00')
+            out=t.build_tracker([record],{},'Otávio',now).iloc[0]
+            self.assertEqual(out['Situação'],'Conferir')
+            self.assertIn('domingo',out['Conferência'])
 
 if __name__=='__main__':
     unittest.main()

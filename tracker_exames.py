@@ -44,7 +44,7 @@ def modality_group(value):
 def assignment_slot(performed, kind):
     day, clock = performed.date(), performed.time()
     if kind == 'laudos':
-        return day, 'Laudos'
+        return reporting_slot(performed)
     if clock < dt.time(6, 45):
         return day - dt.timedelta(days=1), 'Noite'
     if clock < dt.time(13):
@@ -52,6 +52,35 @@ def assignment_slot(performed, kind):
     if kind == 'internado' or clock >= dt.time(18, 45):
         return day, 'Noite'
     return day, 'Tarde'
+
+
+def reporting_slot(performed):
+    day = performed.date()
+    weekday = day.weekday()
+    if weekday == 0:
+        return day, 'Otávio'
+    if weekday == 6:
+        return day, 'Domingo — conferir'
+    offset = 3 if weekday == 4 else 0 if weekday == 5 else 1
+    # Exames excepcionais fora de 07–19h mantêm o responsável
+    # do período adjacente, sem transferir para o plantão noturno.
+    slot = 'Manhã' if performed.time() < dt.time(13) else 'Tarde'
+    return day + dt.timedelta(days=offset), slot
+
+
+def reporting_owner(performed, shifts, monday_doctor):
+    day, slot = reporting_slot(performed)
+    if slot == 'Otávio':
+        return monday_doctor, f'{day:%d/%m/%Y} · Otávio (fixo)', '' if monday_doctor else 'Otávio não identificado no cadastro ativo'
+    if slot == 'Domingo — conferir':
+        return None, f'{day:%d/%m/%Y} · Domingo', 'Exame eletivo no domingo — conferir'
+    owner = shifts.get((day, slot))
+    if not owner:
+        # Havendo somente um médico diurno, ele responde pelos dois períodos.
+        doctors = {shifts.get((day, period)) for period in ('Manhã', 'Tarde')} - {None, ''}
+        if len(doctors) == 1:
+            owner = doctors.pop()
+    return owner, f'{day:%d/%m/%Y} · {slot} (escala de referência)', '' if owner else 'Sem médico diurno na escala de referência'
 
 
 def read_upload(filename, content):
@@ -121,7 +150,7 @@ def duration(seconds):
     return f'{minutes}min' if minutes else 'menos de 1 min'
 
 
-def build_tracker(records, shifts, daily, now=None):
+def build_tracker(records, shifts, monday_doctor=None, now=None):
     now = now or dt.datetime.now(TZ)
     rows = []
     for record in records:
@@ -138,11 +167,16 @@ def build_tracker(records, shifts, daily, now=None):
         if record['modalidade'] == 'TC/RX — conferir':
             issues.append('Modalidade ambígua')
         if rule and performed:
-            day, slot = assignment_slot(performed, rule[2])
-            slot_label = f'{day:%d/%m/%Y} · {slot}'
-            owner = daily.get(day) if slot == 'Laudos' else shifts.get((day, slot))
-            if not owner:
-                issues.append('Sem médico na escala de laudos' if slot == 'Laudos' else 'Sem médico na escala de plantão')
+            if rule[2] == 'laudos':
+                owner, slot_label, issue = reporting_owner(performed, shifts, monday_doctor)
+                if issue:
+                    issues.append(issue)
+            else:
+                day, slot = assignment_slot(performed, rule[2])
+                slot_label = f'{day:%d/%m/%Y} · {slot}'
+                owner = shifts.get((day, slot))
+                if not owner:
+                    issues.append('Sem médico na escala de plantão')
             deadline = performed + dt.timedelta(hours=rule[1])
             remaining = (deadline - now).total_seconds()
         if issues:
@@ -200,10 +234,7 @@ def build_whatsapp_message(recipient, exams, now):
 
 
 def ensure_tables(execute_query):
-    execute_query('''CREATE TABLE IF NOT EXISTS exam_reporting_schedule (
-        report_date DATE PRIMARY KEY,
-        doctor_id BIGINT NOT NULL, doctor_name TEXT NOT NULL
-    ); CREATE TABLE IF NOT EXISTS exam_tracker_snapshot (
+    execute_query('''CREATE TABLE IF NOT EXISTS exam_tracker_snapshot (
         id INTEGER PRIMARY KEY CHECK (id=1), payload TEXT NOT NULL,
         source_name TEXT NOT NULL, imported_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );''')
@@ -222,29 +253,29 @@ def render_tracker(fetch_data, execute_query, fetch_doctors):
             ['Pronto Atendimento', '2h', 'Turno da realização'],
             ['Urgente', '6h', 'Turno da realização'],
             ['Internado', '6h', '06h45–13h: manhã; 13h–24h: noite do dia; madrugada: noite anterior'],
-            ['Oncologia', '4 dias corridos', 'Escala de laudos do dia da realização'],
-            ['Sem prioridade', '5 dias corridos', 'Escala de laudos do dia da realização'],
+            ['Oncologia', '4 dias corridos', 'Escala diurna conforme regra semanal abaixo'],
+            ['Sem prioridade', '5 dias corridos', 'Escala diurna conforme regra semanal abaixo'],
         ], columns=['Prioridade', 'Prazo', 'Responsável']))
     docs = fetch_doctors()
-    with st.expander('📅 Escala diária de laudos · Oncologia e Rotina'):
-        st.caption('Um médico por dia, para TC e RX. Esta escala é independente dos plantões.')
-        active = {int(r['id']): str(r['name']) for _, r in docs.iterrows() if r['ativo']}
-        with st.form('tracker_daily_schedule'):
-            day = st.date_input('Dia da escala de laudos', value=dt.datetime.now(TZ).date())
-            doctor = st.selectbox('Médico responsável', [None] + list(active),
-                                  format_func=lambda x: 'Selecione' if x is None else active[x])
-            if st.form_submit_button('Salvar responsável do dia', disabled=not active):
-                if doctor is None:
-                    st.warning('Selecione o médico.')
-                else:
-                    execute_query('''INSERT INTO exam_reporting_schedule(report_date,doctor_id,doctor_name)
-                        VALUES(%s,%s,%s) ON CONFLICT(report_date) DO UPDATE
-                        SET doctor_id=EXCLUDED.doctor_id,doctor_name=EXCLUDED.doctor_name''',
-                                  (day, doctor, active[doctor]))
-                    st.success('Responsável salvo.')
-        roster = fetch_data('''SELECT r.report_date AS "Data", COALESCE(d.name,r.doctor_name) AS "Médico"
-            FROM exam_reporting_schedule r LEFT JOIN doctors d ON d.id=r.doctor_id ORDER BY r.report_date DESC''')
-        st.dataframe(roster, hide_index=True, use_container_width=True)
+    otavios = {int(r['id']): str(r['name']) for _,r in docs.iterrows()
+               if r['ativo'] and 'otavio' in re.findall(r'\w+', normalize(r['name']))}
+    monday_doctor = next(iter(otavios.values())) if len(otavios) == 1 else None
+    with st.expander('📅 Responsáveis por Oncologia e Rotina'):
+        st.table(pd.DataFrame([
+            ['Segunda', 'Otávio (fixo)'], ['Terça', 'Escala da quarta'],
+            ['Quarta', 'Escala da quinta'], ['Quinta', 'Escala da sexta'],
+            ['Sexta', 'Escala da segunda seguinte'], ['Sábado', 'Escala do próprio sábado'],
+            ['Domingo', 'Sem exames eletivos; ocorrência exige conferência'],
+        ], columns=['Dia do exame', 'Escala de referência']))
+        st.caption('07h–13h: médico da manhã; 13h–19h: médico da tarde. Antes das 07h permanece com a manhã; após as 19h, com a tarde. Se houver só um médico diurno, ele assume ambos os períodos. A escala manual anterior não participa mais da atribuição.')
+        if len(otavios) > 1:
+            selected = st.selectbox('Qual Otávio é o responsável fixo da segunda?', [None]+list(otavios),
+                                    format_func=lambda x: 'Selecione' if x is None else otavios[x], key='tracker_otavio')
+            monday_doctor = otavios.get(selected)
+        if monday_doctor:
+            st.caption(f'Responsável fixo de segunda: {monday_doctor}.')
+    if not monday_doctor:
+        st.warning('Identifique Otávio no cadastro ativo da equipe. Os eletivos de segunda ficarão para conferir até essa identificação.')
     with st.expander('📥 Importar lista de exames pendentes', expanded=True):
         upload = st.file_uploader('Exportação completa dos pendentes', type=['zip','xls','xlsx','csv'], key='tracker_upload')
         st.caption('Cada importação substitui a lista anterior de TC/RX. A ausência de um exame na nova lista não comprova que foi laudado.')
@@ -264,7 +295,7 @@ def render_tracker(fetch_data, execute_query, fetch_doctors):
                 st.success('Lista importada e salva no banco.')
     snapshot = fetch_data('SELECT payload,source_name,imported_at FROM exam_tracker_snapshot WHERE id=1')
     if snapshot.empty:
-        st.info('Importe a exportação de pendentes e cadastre a escala diária de laudos para começar.')
+        st.info('Importe a exportação de pendentes. Os responsáveis serão identificados pela escala de plantões e pela regra semanal.')
         return
     records = json.loads(snapshot.iloc[0]['payload'])
     imported = pd.Timestamp(snapshot.iloc[0]['imported_at']).tz_convert(TZ)
@@ -273,19 +304,17 @@ def render_tracker(fetch_data, execute_query, fetch_doctors):
     st.caption('Os prazos são recalculados a cada interação ou atualização. Novos laudos exigem uma nova exportação de pendentes.')
     performed = [parse_performed(r['realizacao']) for r in records]
     valid_days = [v.date() for v in performed if v]
-    shifts, daily = {}, {}
+    shifts = {}
     if valid_days:
-        start, end = min(valid_days)-dt.timedelta(days=1), max(valid_days)
+        reference_days = [reporting_slot(v)[0] for v in performed if v]
+        start = min(valid_days)-dt.timedelta(days=1)
+        end = max(valid_days + reference_days)
         data = fetch_data('''SELECT s.shift_date,s.shift_time,COALESCE(d.name,s.doctor_name) AS name
             FROM shift_schedule s LEFT JOIN doctors d ON d.id=s.doctor_id
             WHERE s.shift_date BETWEEN %s AND %s''', (start,end))
         shifts = {(pd.Timestamp(r['shift_date']).date(),r['shift_time']): r['name'] for _,r in data.iterrows()}
-        data = fetch_data('''SELECT r.report_date,COALESCE(d.name,r.doctor_name) AS name
-            FROM exam_reporting_schedule r LEFT JOIN doctors d ON d.id=r.doctor_id
-            WHERE r.report_date BETWEEN %s AND %s''', (start,end))
-        daily = {pd.Timestamp(r['report_date']).date(): r['name'] for _,r in data.iterrows()}
     now = dt.datetime.now(TZ)
-    result = build_tracker(records, shifts, daily, now)
+    result = build_tracker(records, shifts, monday_doctor, now)
     if result.empty:
         st.info('A lista não contém exames de TC/RX.')
         return
@@ -303,10 +332,13 @@ def render_tracker(fetch_data, execute_query, fetch_doctors):
     st.dataframe(view, hide_index=True, use_container_width=True)
     st.download_button('⬇️ Baixar relatório filtrado (CSV)', view.to_csv(index=False).encode('utf-8-sig'),
                        file_name='tracker_exames.csv', mime='text/csv')
-    st.download_button('⬇️ Backup da lista e escala de laudos (JSON)',
+    st.download_button('⬇️ Backup da lista e referências de escala (JSON)',
                        json.dumps({'records':records,'source_name':str(snapshot.iloc[0]['source_name']),
                                    'imported_at':str(imported),
-                                   'reporting_schedule':fetch_data('SELECT * FROM exam_reporting_schedule').to_dict('records')},
+                                   'reporting_rule':'Seg Otávio; ter–qui dia seguinte; sex segunda seguinte; sáb próprio dia',
+                                   'monday_doctor':monday_doctor,
+                                   'shift_references':[{'date':day.isoformat(),'period':period,'doctor':doctor}
+                                                       for (day,period),doctor in shifts.items()]},
                                   ensure_ascii=False, default=str, indent=2),
                        file_name='backup_tracker_exames.json', mime='application/json')
     with st.expander('📲 Preparar cobrança no WhatsApp'):

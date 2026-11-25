@@ -9,10 +9,12 @@ Se houve alterações posteriores no app de produção, compare antes de substit
 
 USO
 Desbloqueie Administração/RH e abra Tracker de exames.
-Cadastre o médico de cada dia na escala própria de laudos.
+Mantenha a escala de plantões preenchida para os dias de referência.
+Otávio é identificado pelo nome no cadastro ativo da equipe.
 Importe uma exportação completa de pendentes em ZIP, XLS, XLSX ou CSV.
 Confirme a substituição da lista anterior. Apenas TC e RX serão armazenados.
-A lista importada e a escala de laudos persistem no PostgreSQL em tabelas próprias.
+A lista importada persiste no PostgreSQL. A atribuição usa a escala de plantões.
+A antiga escala manual de laudos é preservada no banco, mas não é utilizada.
 A importação não altera a escala de plantões.
 Use Atualizar prazos e responsáveis para recalcular os tempos com a hora atual.
 O sistema não consulta automaticamente o RIS/PACS: exames concluídos deixam
@@ -27,7 +29,21 @@ Manhã 06h45 até antes de 13h; tarde 13h até antes de 18h45;
 noite 18h45 até antes de 06h45 do dia seguinte.
 Internado: de 06h45 até antes de 13h, manhã; a partir de 13h,
 noite do mesmo dia; antes de 06h45, noite da véspera.
-Oncologia e sem prioridade: responsável da escala de laudos da data de realização.
+Oncologia e sem prioridade, conforme o dia de realização:
+- Segunda: Otávio fixo, nos dois períodos.
+- Terça: médico da quarta.
+- Quarta: médico da quinta.
+- Quinta: médico da sexta.
+- Sexta: médico da segunda-feira seguinte.
+- Sábado: médico do próprio sábado.
+- Domingo: ocorrência excepcional fica para conferência.
+Havendo dois médicos no dia de referência, exames de 07h até antes de 13h
+ficam com o da manhã; de 13h até antes de 19h, com o da tarde.
+Antes de 07h mantém-se o médico da manhã; a partir de 19h, o da tarde.
+Se apenas um médico diurno estiver escalado, ele assume ambos os períodos.
+Não é necessário preencher uma escala manual de laudos.
+Se houver mais de um Otávio ativo, selecione o responsável no painel.
+Se Otávio não estiver identificado, os exames de segunda ficam para conferir.
 Prazos: Trauma/PA 2h; Urgente/Internado 6h; Oncologia 96h; rotina 120h.
 Fuso: America/Fortaleza. Horários da exportação são interpretados nesse fuso.
 Para a categoria rosa, o texto aceito é Internado ou Internação.
