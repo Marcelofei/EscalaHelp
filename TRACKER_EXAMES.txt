@@ -51,9 +51,13 @@ Para a categoria rosa, o texto aceito é Internado ou Internação.
 WHATSAPP
 Selecione o médico e informe o telefone com código do país e DDD.
 Confira a mensagem e abra o WhatsApp para enviar. Não há envio automático
-nem confirmação de entrega. A mensagem usa nome do paciente, descrição do
-exame e prazo, agrupados por data de realização e modalidade (TC ou RX).
-Atrasos a partir de 24 horas mostram somente os dias completos, sem horas.
+nem confirmação de entrega. A mensagem resume quantidades por prioridade,
+data de realização e modalidade (TC ou RX), sem nomes de pacientes ou acessos.
+Seções: Pronto Atendimento, Urgente, Internos, Hosp Trauma e Eletivos.
+Oncologia e Sem prioridade são somadas em Eletivos apenas na mensagem;
+os prazos individuais de 4 e 5 dias continuam preservados no tracker.
+Seções vazias mostram Sem pendências. As quantidades contam linhas da
+exportação e respeitam o médico e o filtro de atrasados selecionados.
 
 BACKUP
 O backup original da escala mantém o comportamento anterior.

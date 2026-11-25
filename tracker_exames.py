@@ -205,31 +205,37 @@ def build_tracker(records, shifts, monday_doctor=None, now=None):
     return pd.DataFrame(rows).sort_values('_segundos', kind='stable').reset_index(drop=True)
 
 
-def whatsapp_deadline(seconds):
-    if seconds < 0:
-        days = int(abs(seconds) // 86400)
-        if days:
-            return f"em atraso há {days} {'dia' if days == 1 else 'dias'}"
-        return 'em atraso há ' + duration(seconds)
-    return 'vence agora' if seconds == 0 else 'faltam ' + duration(seconds)
-
-
 def build_whatsapp_message(recipient, exams, now):
-    lines = [f'Olá, {recipient}.', '',
-             f'Essas são suas pendências de laudo TC/RX do Hospital HELP — atualização de {now:%d/%m/%Y %H:%M}.']
-    by_day = {}
+    lines = [f'Bom dia Dr(a). {recipient},', '',
+             f'Essas são suas pendências de laudo TC/RX do Hospital HELP — atualização de {now:%d/%m/%Y %H:%M}.',
+             'Segue a relação e detalhamento dos exames para liberação:']
+    sections = {
+        'PRONTO ATENDIMENTO (Prioridade)': {},
+        'URGENTE (Prioridade)': {},
+        'INTERNOS (Prioridade)': {},
+        'HOSP TRAUMA (Prioridade)': {},
+        'ELETIVOS': {},
+    }
+    section_by_priority = {
+        'pronto atendimento': 'PRONTO ATENDIMENTO (Prioridade)',
+        'urgente': 'URGENTE (Prioridade)',
+        'internado': 'INTERNOS (Prioridade)',
+        'internacao': 'INTERNOS (Prioridade)',
+        'hosp trauma': 'HOSP TRAUMA (Prioridade)',
+        'hospital de trauma': 'HOSP TRAUMA (Prioridade)',
+        'oncologia': 'ELETIVOS', 'sem prioridade': 'ELETIVOS', '': 'ELETIVOS',
+    }
     for _, exam in exams.iterrows():
         day = parse_performed(exam['Realização']).date()
-        by_day.setdefault(day, {}).setdefault(exam['Modalidade'], []).append(exam)
-    for day in sorted(by_day):
-        lines.extend(['', day.strftime('%d/%m')])
-        for modality in ('TC', 'RX'):
-            entries = by_day[day].get(modality, [])
-            if not entries:
-                continue
-            lines.extend(['', f'- {modality}:'])
-            for exam in sorted(entries, key=lambda r: r['_segundos']):
-                lines.append(f"  - {exam['Paciente']} // {exam['Exame']} // {whatsapp_deadline(exam['_segundos'])}")
+        section = sections[section_by_priority[normalize(exam['Prioridade'])]]
+        key = (day, exam['Modalidade'])
+        section[key] = section.get(key, 0) + 1
+    for title, counts in sections.items():
+        lines.extend(['', title])
+        if not counts:
+            lines.append('Sem pendências.')
+        for (day, modality), count in sorted(counts.items(), key=lambda item: (item[0][0], {'TC':0, 'RX':1}[item[0][1]])):
+            lines.append(f'{day:%d/%m} - {modality} - {count:02d}')
     return '\n'.join(lines)
 
 

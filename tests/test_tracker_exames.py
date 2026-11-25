@@ -71,27 +71,39 @@ class RulesTests(unittest.TestCase):
         self.assertEqual(excluded,0)
         self.assertEqual(records[0]['prioridade'],'')
         self.assertEqual(t.RULES[t.normalize(records[0]['prioridade'])][1],120)
-    def test_whatsapp_groups_dates_modalities_and_patient_names(self):
+    def test_whatsapp_counts_by_priority_day_and_modality_without_patient_names(self):
         exams = pd.DataFrame([
-            {'Paciente':'Paciente B','Exame':'RX tórax','Modalidade':'RX','Realização':'26/10/2026 10:00','_segundos':-7200,'Accession Nº':'ACESSO-SECRETO'},
-            {'Paciente':'Paciente A','Exame':'TC abdome total','Modalidade':'TC','Realização':'25/10/2026 10:00','_segundos':-(5*86400+7*3600),'Accession Nº':'OUTRO-ACESSO'},
-            {'Paciente':'Paciente C','Exame':'RX coluna','Modalidade':'RX','Realização':'25/10/2026 11:00','_segundos':-86400},
+            {'Paciente':'Paciente B','Exame':'RX tórax','Modalidade':'RX','Realização':'26/10/2026 10:00','Prioridade':'Pronto Atendimento','Accession Nº':'ACESSO-SECRETO'},
+            {'Paciente':'Paciente A','Exame':'TC abdome total','Modalidade':'TC','Realização':'25/10/2026 10:00','Prioridade':'Oncologia'},
+            {'Paciente':'Paciente C','Exame':'TC crânio','Modalidade':'TC','Realização':'25/10/2026 11:00','Prioridade':'Sem prioridade'},
+            {'Paciente':'Paciente D','Exame':'RX coluna','Modalidade':'RX','Realização':'25/10/2026 11:00','Prioridade':''},
         ])
         message=t.build_whatsapp_message('Iago',exams,self.moment('13:58'))
-        self.assertEqual(message, 'Olá, Iago.\n\n'
-            'Essas são suas pendências de laudo TC/RX do Hospital HELP — atualização de 25/11/2026 13:58.\n\n'
-            '25/10\n\n- TC:\n  - Paciente A // TC abdome total // em atraso há 5 dias\n\n'
-            '- RX:\n  - Paciente C // RX coluna // em atraso há 1 dia\n\n'
-            '26/10\n\n- RX:\n  - Paciente B // RX tórax // em atraso há 2h 00min')
+        self.assertEqual(message, 'Bom dia Dr(a). Iago,\n\n'
+            'Essas são suas pendências de laudo TC/RX do Hospital HELP — atualização de 25/11/2026 13:58.\n'
+            'Segue a relação e detalhamento dos exames para liberação:\n\n'
+            'PRONTO ATENDIMENTO (Prioridade)\n26/10 - RX - 01\n\n'
+            'URGENTE (Prioridade)\nSem pendências.\n\n'
+            'INTERNOS (Prioridade)\nSem pendências.\n\n'
+            'HOSP TRAUMA (Prioridade)\nSem pendências.\n\n'
+            'ELETIVOS\n25/10 - TC - 02\n25/10 - RX - 01')
         self.assertNotIn('ACESSO',message)
-        self.assertNotIn('7h',message)
+        self.assertNotIn('Paciente',message)
+        self.assertNotIn('abdome',message)
+        self.assertNotIn('Oncologia',message)
 
-    def test_whatsapp_deadline_boundaries(self):
-        self.assertEqual(t.whatsapp_deadline(-86399),'em atraso há 23h 59min')
-        self.assertEqual(t.whatsapp_deadline(-86400),'em atraso há 1 dia')
-        self.assertEqual(t.whatsapp_deadline(-172800),'em atraso há 2 dias')
-        self.assertEqual(t.whatsapp_deadline(3600),'faltam 1h 00min')
-        self.assertEqual(t.whatsapp_deadline(0),'vence agora')
+    def test_whatsapp_priority_sections_and_date_order(self):
+        exams=pd.DataFrame([
+            {'Prioridade':priority,'Realização':day+'/11/2026 10:00','Modalidade':'TC'}
+            for priority,day in [('Urgente','25'),('Internado','24'),('Internação','24'),
+                                 ('Hosp Trauma','23'),('Hospital de Trauma','23'),
+                                 ('Pronto Atendimento','22'),('Pronto Atendimento','21')]])
+        message=t.build_whatsapp_message('Iago',exams,self.moment('13:58'))
+        self.assertIn('URGENTE (Prioridade)\n25/11 - TC - 01',message)
+        self.assertIn('INTERNOS (Prioridade)\n24/11 - TC - 02',message)
+        self.assertIn('HOSP TRAUMA (Prioridade)\n23/11 - TC - 02',message)
+        self.assertLess(message.index('21/11'),message.index('22/11'))
+        self.assertTrue(message.endswith('ELETIVOS\nSem pendências.'))
 
     def test_reporting_weekday_reference_and_month_year_boundaries(self):
         for source,reference,slot in [
