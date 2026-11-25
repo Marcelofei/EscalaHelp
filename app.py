@@ -882,7 +882,7 @@ if not st.session_state['auth']:
 # =================================================================
 # ADMINISTRAÇÃO / RH — ACESSO SEPARADO
 # =================================================================
-ADMIN_PAGES = {'🔁 Padrão Rotativo', '👥 Equipe', '💰 Fechamento RH', '⚙️ Turnos e Valores', '💾 Backup'}
+ADMIN_PAGES = {'⏱️ Tracker de exames', '🔁 Padrão Rotativo', '👥 Equipe', '💰 Fechamento RH', '⚙️ Turnos e Valores', '💾 Backup'}
 
 
 def _secret_value(name):
@@ -1027,6 +1027,7 @@ nav_button('📅 Escala','nav_escala'); nav_button('🔄 Trocas','nav_trocas')
 # Planejamento estrutural e áreas sensíveis só existem após autenticação administrativa.
 if st.session_state.get('admin_auth'):
     st.sidebar.markdown("<div class='nav-eyebrow'>Administração / RH</div>",unsafe_allow_html=True)
+    nav_button('⏱️ Tracker de exames','nav_tracker')
     nav_button('🔁 Padrão Rotativo','nav_padrao')
     nav_button('👥 Equipe','nav_equipe')
     nav_button('💰 Fechamento RH','nav_rh')
@@ -1067,7 +1068,9 @@ def fixed_day_container(key):
 
 def render_repassar_plantao(shift_date, shift_time, owner_id, owner_name, viewer_id):
     key = f"repassar_{shift_date.isoformat()}_{shift_time}_{viewer_id}_{owner_id}_{owner_name}"
-    with st.expander('Repassar plantão'):
+    if st.button('Repassar plantão', key=f'{key}_abrir', use_container_width=True):
+        st.session_state[f'{key}_aberto'] = not st.session_state.get(f'{key}_aberto', False)
+    if st.session_state.get(f'{key}_aberto', False):
         docs = fetch_doctors()
         candidatos = {
             int(r['id']): str(r['name']) for _, r in docs.iterrows()
@@ -1141,24 +1144,23 @@ def render_quick_claim_calendar(df_raw, ano, mes, doctor_name, doctor_id):
                         info=occupied.get((dt,turno)); em=emoji[turno]
                         if info:
                             atual=info['name']; atual_id=info['id']
-                            if atual==doctor_name:
-                                with st.popover(f"{em} ✓ Você", use_container_width=True):
-                                    st.caption(f"{turno} · {day:02d}/{mes:02d} · atualmente com **{atual}**")
-                                    render_repassar_plantao(dt, turno, atual_id, atual, doctor_id)
-                            else:
-                                with st.popover(f"{em} {atual}",use_container_width=True):
-                                    st.caption(f"{turno} · {day:02d}/{mes:02d} · atualmente com **{atual}**")
-                                    if st.button('✋ Assumir este plantão',key=f'take_{ano}_{mes}_{day}_{turno}_{doctor_id}',type='primary',use_container_width=True):
-                                        ok,owner=replace_occupied_shift_atomic(dt,turno,atual_id,atual,doctor_id,doctor_name)
-                                        st.session_state['claim_flash']=('success' if ok else 'warning', f"Você assumiu {turno.lower()} de {day:02d}/{mes:02d}." if ok else f"Não foi possível: o plantão agora está com {owner}.")
-                                        st.rerun()
-                                    render_repassar_plantao(dt, turno, atual_id, atual, doctor_id)
-                                    opcoes=[x for x in meus if x!=(dt,turno)]
-                                    if opcoes:
-                                        pick=st.selectbox('Trocar com um plantão meu',opcoes,format_func=lambda x:f"{x[0].strftime('%d/%m')} · {x[1]}",key=f'swap_pick_{ano}_{mes}_{day}_{turno}_{doctor_id}')
-                                        if st.button('🔄 Confirmar troca',key=f'swap_inline_{ano}_{mes}_{day}_{turno}_{doctor_id}',use_container_width=True):
-                                            ok,msg=swap_with_my_shift_atomic(dt,turno,atual_id,pick[0],pick[1],doctor_id)
-                                            st.session_state['claim_flash']=('success' if ok else 'warning',msg); st.rerun()
+                            label = f"{em} ✓ Você" if atual==doctor_name else f"{em} {atual}"
+                            with st.popover(label, use_container_width=True):
+                                st.caption(f"{turno} · {day:02d}/{mes:02d} · atualmente com **{atual}**")
+                                if st.button('✋ Assumir este plantão',key=f'take_{ano}_{mes}_{day}_{turno}_{doctor_id}',type='primary',use_container_width=True,disabled=atual==doctor_name):
+                                    ok,owner=replace_occupied_shift_atomic(dt,turno,atual_id,atual,doctor_id,doctor_name)
+                                    st.session_state['claim_flash']=('success' if ok else 'warning', f"Você assumiu {turno.lower()} de {day:02d}/{mes:02d}." if ok else f"Não foi possível: o plantão agora está com {owner}.")
+                                    st.rerun()
+                                opcoes=[x for x in meus if x!=(dt,turno)]
+                                swap_key=f'swap_menu_{ano}_{mes}_{day}_{turno}_{doctor_id}_{atual_id}'
+                                if st.button('🔄 Trocar plantão',key=f'{swap_key}_abrir',use_container_width=True,disabled=not opcoes):
+                                    st.session_state[swap_key]=not st.session_state.get(swap_key,False)
+                                if opcoes and st.session_state.get(swap_key,False):
+                                    pick=st.selectbox('Trocar com um plantão meu',opcoes,format_func=lambda x:f"{x[0].strftime('%d/%m')} · {x[1]}",key=f'swap_pick_{ano}_{mes}_{day}_{turno}_{doctor_id}')
+                                    if st.button('🔄 Confirmar troca',key=f'swap_inline_{ano}_{mes}_{day}_{turno}_{doctor_id}',use_container_width=True):
+                                        ok,msg=swap_with_my_shift_atomic(dt,turno,atual_id,pick[0],pick[1],doctor_id)
+                                        st.session_state['claim_flash']=('success' if ok else 'warning',msg); st.rerun()
+                                render_repassar_plantao(dt, turno, atual_id, atual, doctor_id)
                         else:
                             if st.button(f"＋ {turno}",key=f'claim_{ano}_{mes}_{day}_{turno}_{doctor_id}',use_container_width=True):
                                 ok,owner=claim_shift_atomic(dt,turno,doctor_id,doctor_name)
@@ -1405,3 +1407,8 @@ elif page=='💾 Backup' and st.session_state.get('admin_auth'):
         else: st.success('Backup restaurado.'); st.session_state.pop('backup',None); st.rerun()
     if st.session_state.get('pre_restore_backup'):
         st.download_button('🛟 Baixar backup automático anterior à última restauração',data=st.session_state['pre_restore_backup'],file_name=f'backup_pre_restore_{hoje:%Y%m%d}.zip',mime='application/zip')
+
+
+elif page=='⏱️ Tracker de exames' and st.session_state.get('admin_auth'):
+    from tracker_exames import render_tracker
+    render_tracker(fetch_data, execute_query, fetch_doctors)

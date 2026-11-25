@@ -1,0 +1,51 @@
+Hospital HELP — Tracker de exames TC/RX
+
+INSTALAÇÃO
+Envie app.py, tracker_exames.py e requirements.txt para a mesma pasta do projeto.
+Mantenha o comando de execução: streamlit run app.py.
+Mantenha DATABASE_URL e ADMIN_PASSWORD/ADMIN_PASSWORD_HASH já configurados.
+A integração usa o app fornecido nesta conversa com os três botões de plantão.
+Se houve alterações posteriores no app de produção, compare antes de substituí-lo.
+
+USO
+Desbloqueie Administração/RH e abra Tracker de exames.
+Cadastre o médico de cada dia na escala própria de laudos.
+Importe uma exportação completa de pendentes em ZIP, XLS, XLSX ou CSV.
+Confirme a substituição da lista anterior. Apenas TC e RX serão armazenados.
+A lista importada e a escala de laudos persistem no PostgreSQL em tabelas próprias.
+A importação não altera a escala de plantões.
+Use Atualizar prazos e responsáveis para recalcular os tempos com a hora atual.
+O sistema não consulta automaticamente o RIS/PACS: exames concluídos deixam
+esta lista somente quando uma nova exportação completa é importada.
+Identificadores repetidos são preservados; as contagens são de linhas.
+Data e hora da realização e Prioridade determinam o prazo e o responsável.
+O convênio nunca substitui a prioridade.
+Casos sem escala, prioridade reconhecida ou horário válido ficam para conferir.
+
+HORÁRIOS
+Manhã 06h45 até antes de 13h; tarde 13h até antes de 18h45;
+noite 18h45 até antes de 06h45 do dia seguinte.
+Internado: de 06h45 até antes de 13h, manhã; a partir de 13h,
+noite do mesmo dia; antes de 06h45, noite da véspera.
+Oncologia e sem prioridade: responsável da escala de laudos da data de realização.
+Prazos: Trauma/PA 2h; Urgente/Internado 6h; Oncologia 96h; rotina 120h.
+Fuso: America/Fortaleza. Horários da exportação são interpretados nesse fuso.
+Para a categoria rosa, o texto aceito é Internado ou Internação.
+
+WHATSAPP
+Selecione o médico e informe o telefone com código do país e DDD.
+Confira a mensagem e abra o WhatsApp para enviar. Não há envio automático
+nem confirmação de entrega. A mensagem usa acesso/ID e detalhes do exame;
+o nome do paciente fica no painel e no relatório CSV.
+
+BACKUP
+O backup original da escala mantém o comportamento anterior.
+Para os dados do tracker, use também o botão de backup JSON no próprio tracker.
+A restauração desse JSON ainda não possui interface no aplicativo.
+Os responsáveis exibidos são recalculados pela escala atual do dia histórico;
+esta versão não mantém um histórico imutável das atribuições.
+
+VALIDAÇÃO
+Sintaxe verificada com py_compile e regras verificadas com testes isolados.
+A integração com o PostgreSQL e o envio pelo WhatsApp precisam ser conferidos
+no ambiente do hospital.
