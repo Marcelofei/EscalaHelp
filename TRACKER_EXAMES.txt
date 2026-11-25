@@ -35,8 +35,9 @@ Para a categoria rosa, o texto aceito é Internado ou Internação.
 WHATSAPP
 Selecione o médico e informe o telefone com código do país e DDD.
 Confira a mensagem e abra o WhatsApp para enviar. Não há envio automático
-nem confirmação de entrega. A mensagem usa acesso/ID e detalhes do exame;
-o nome do paciente fica no painel e no relatório CSV.
+nem confirmação de entrega. A mensagem usa nome do paciente, descrição do
+exame e prazo, agrupados por data de realização e modalidade (TC ou RX).
+Atrasos a partir de 24 horas mostram somente os dias completos, sem horas.
 
 BACKUP
 O backup original da escala mantém o comportamento anterior.

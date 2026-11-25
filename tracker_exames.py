@@ -171,6 +171,34 @@ def build_tracker(records, shifts, daily, now=None):
     return pd.DataFrame(rows).sort_values('_segundos', kind='stable').reset_index(drop=True)
 
 
+def whatsapp_deadline(seconds):
+    if seconds < 0:
+        days = int(abs(seconds) // 86400)
+        if days:
+            return f"em atraso há {days} {'dia' if days == 1 else 'dias'}"
+        return 'em atraso há ' + duration(seconds)
+    return 'vence agora' if seconds == 0 else 'faltam ' + duration(seconds)
+
+
+def build_whatsapp_message(recipient, exams, now):
+    lines = [f'Olá, {recipient}.', '',
+             f'Essas são suas pendências de laudo TC/RX do Hospital HELP — atualização de {now:%d/%m/%Y %H:%M}.']
+    by_day = {}
+    for _, exam in exams.iterrows():
+        day = parse_performed(exam['Realização']).date()
+        by_day.setdefault(day, {}).setdefault(exam['Modalidade'], []).append(exam)
+    for day in sorted(by_day):
+        lines.extend(['', day.strftime('%d/%m')])
+        for modality in ('TC', 'RX'):
+            entries = by_day[day].get(modality, [])
+            if not entries:
+                continue
+            lines.extend(['', f'- {modality}:'])
+            for exam in sorted(entries, key=lambda r: r['_segundos']):
+                lines.append(f"  - {exam['Paciente']} // {exam['Exame']} // {whatsapp_deadline(exam['_segundos'])}")
+    return '\n'.join(lines)
+
+
 def ensure_tables(execute_query):
     execute_query('''CREATE TABLE IF NOT EXISTS exam_reporting_schedule (
         report_date DATE PRIMARY KEY,
@@ -291,9 +319,7 @@ def render_tracker(fetch_data, execute_query, fetch_doctors):
         group = eligible[eligible['Médico']==recipient]
         if only_late:
             group = group[group['Situação']=='Atrasado']
-        message = f'Olá, {recipient}. Pendências de laudo TC/RX — atualização de {now:%d/%m/%Y %H:%M}.\n'
-        message += '\n'.join(f"• Acesso {r['Accession Nº'] or r['ID'] or 'não informado'} · {r['Exame']} · {r['Realização']} · {r['Prazo']}" for _,r in group.iterrows())
-        message += '\nConsulte a coordenação para conferir a lista completa.'
+        message = build_whatsapp_message(recipient, group, now)
         text = st.text_area('Mensagem para conferir antes de abrir o WhatsApp', value=message, height=220)
         st.download_button('Baixar mensagem (TXT)', text, file_name='mensagem_pendencias.txt', mime='text/plain')
         phone = st.text_input('WhatsApp do médico com código do país e DDD', placeholder='55…', key='tracker_whatsapp_phone')

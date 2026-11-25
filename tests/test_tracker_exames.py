@@ -71,5 +71,27 @@ class RulesTests(unittest.TestCase):
         self.assertEqual(excluded,0)
         self.assertEqual(records[0]['prioridade'],'')
         self.assertEqual(t.RULES[t.normalize(records[0]['prioridade'])][1],120)
+    def test_whatsapp_groups_dates_modalities_and_patient_names(self):
+        exams = pd.DataFrame([
+            {'Paciente':'Paciente B','Exame':'RX tórax','Modalidade':'RX','Realização':'26/10/2026 10:00','_segundos':-7200,'Accession Nº':'ACESSO-SECRETO'},
+            {'Paciente':'Paciente A','Exame':'TC abdome total','Modalidade':'TC','Realização':'25/10/2026 10:00','_segundos':-(5*86400+7*3600),'Accession Nº':'OUTRO-ACESSO'},
+            {'Paciente':'Paciente C','Exame':'RX coluna','Modalidade':'RX','Realização':'25/10/2026 11:00','_segundos':-86400},
+        ])
+        message=t.build_whatsapp_message('Iago',exams,self.moment('13:58'))
+        self.assertEqual(message, 'Olá, Iago.\n\n'
+            'Essas são suas pendências de laudo TC/RX do Hospital HELP — atualização de 25/11/2026 13:58.\n\n'
+            '25/10\n\n- TC:\n  - Paciente A // TC abdome total // em atraso há 5 dias\n\n'
+            '- RX:\n  - Paciente C // RX coluna // em atraso há 1 dia\n\n'
+            '26/10\n\n- RX:\n  - Paciente B // RX tórax // em atraso há 2h 00min')
+        self.assertNotIn('ACESSO',message)
+        self.assertNotIn('7h',message)
+
+    def test_whatsapp_deadline_boundaries(self):
+        self.assertEqual(t.whatsapp_deadline(-86399),'em atraso há 23h 59min')
+        self.assertEqual(t.whatsapp_deadline(-86400),'em atraso há 1 dia')
+        self.assertEqual(t.whatsapp_deadline(-172800),'em atraso há 2 dias')
+        self.assertEqual(t.whatsapp_deadline(3600),'faltam 1h 00min')
+        self.assertEqual(t.whatsapp_deadline(0),'vence agora')
+
 if __name__=='__main__':
     unittest.main()
