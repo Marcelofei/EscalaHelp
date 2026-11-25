@@ -2,6 +2,8 @@ import datetime as dt
 import sys
 import types
 import unittest
+import io
+import zipfile
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.modules['streamlit'] = types.ModuleType('streamlit')
@@ -62,7 +64,10 @@ class RulesTests(unittest.TestCase):
             self.assertEqual(t.modality_group(value),'TC')
         for value in ['DX','OT\\CR','RX','DO\\OT\\CR']:
             self.assertEqual(t.modality_group(value),'RX')
-        for value in ['OT\\MR','MR','TE','OT','US\\SR','MG\\OT','MAPA','XA\\OT']:
+        for value in ['MG','MG\\OT','OT\\MG','MMG','mamografia']:
+            self.assertEqual(t.modality_group(value),'MMG')
+        self.assertIn('conferir',t.modality_group('MG\\DX'))
+        for value in ['OT\\MR','MR','TE','OT','US\\SR','MAPA','XA\\OT']:
             self.assertIsNone(t.modality_group(value))
     def test_priority_only(self):
         raw=pd.DataFrame([{'Prioridade':'','Nome do paciente':'teste','Data do exame':'25/11/2026 10:00','Modalidade':'CT','Descrição do exame':'TC','Convênio':'Oncologia'}]*2)
@@ -80,7 +85,7 @@ class RulesTests(unittest.TestCase):
         ])
         message=t.build_whatsapp_message('Iago',exams,self.moment('13:58'))
         self.assertEqual(message, 'Bom dia Dr(a). Iago,\n\n'
-            'Essas são suas pendências de laudo TC/RX do Hospital HELP — atualização de 25/11/2026 13:58.\n'
+            'Essas são suas pendências de laudo TC/RX/MMG do Hospital HELP — atualização de 25/11/2026 13:58.\n'
             'Segue a relação e detalhamento dos exames para liberação:\n\n'
             'PRONTO ATENDIMENTO (Prioridade)\n26/10 - RX - 01\n\n'
             'URGENTE (Prioridade)\nSem pendências.\n\n'
@@ -143,6 +148,61 @@ class RulesTests(unittest.TestCase):
             out=t.build_tracker([record],{},'Otávio',now).iloc[0]
             self.assertEqual(out['Situação'],'Conferir')
             self.assertIn('domingo',out['Conferência'])
+
+    def csv_file(self, records):
+        return pd.DataFrame(records).to_csv(index=False).encode('utf-8')
+
+    def source_record(self, **changes):
+        record={'ID':'1','Accession Nº':'A1','Prioridade':'','Nome do paciente':'Paciente teste',
+                'Data do exame':'23/11/2026 10:00','Modalidade':'MG\\OT','Descrição do exame':'Mamografia'}
+        record.update(changes)
+        return record
+
+    def test_multi_file_union_preserves_within_file_rows_and_merges_cross_file_copies(self):
+        first=self.source_record()
+        second=self.source_record(**{'ID':'2','Accession Nº':'A2','Modalidade':'CT'})
+        records,excluded,duplicates,sheets=t.merge_uploads([
+            ('a.csv',self.csv_file([first,first])),
+            ('b.csv',self.csv_file([first,second])),
+        ])
+        self.assertEqual((len(records),excluded,duplicates,sheets),(3,0,1,2))
+        self.assertEqual([r['modalidade'] for r in records],['MMG','MMG','TC'])
+        self.assertEqual([o['arquivo'] for o in records[0]['origens']],['a.csv','b.csv'])
+        out=t.build_tracker(records,{},'Otávio',self.moment('13:58'))
+        self.assertTrue((out['Médico']=='Otávio').all())
+        message=t.build_whatsapp_message('Otávio',out,self.moment('13:58'))
+        self.assertIn('23/11 - MMG - 02',message)
+        self.assertIn('23/11 - TC - 01',message)
+        self.assertNotIn('Paciente teste',message)
+
+    def test_multiple_spreadsheets_inside_zip_and_standalone_file(self):
+        archive=io.BytesIO()
+        with zipfile.ZipFile(archive,'w') as z:
+            z.writestr('a.csv',self.csv_file([self.source_record()]))
+            z.writestr('b.csv',self.csv_file([self.source_record(**{'ID':'2'})]))
+            z.writestr('__MACOSX/._ignored.csv','ignored')
+        records,excluded,duplicates,sheets=t.merge_uploads([
+            ('exames.zip',archive.getvalue()),
+            ('extra.csv',self.csv_file([self.source_record(**{'ID':'3','Modalidade':'DX'}),
+                                       self.source_record(**{'ID':'4','Modalidade':'MR'})])),
+        ])
+        self.assertEqual((len(records),excluded,duplicates,sheets),(3,1,0,3))
+        self.assertEqual(records[0]['origens'][0]['arquivo'],'exames.zip / a.csv')
+
+    def test_missing_identifiers_do_not_merge_and_invalid_source_rejects_batch(self):
+        row=self.source_record(**{'ID':'','Accession Nº':''})
+        records,_,duplicates,_=t.merge_uploads([('a.csv',self.csv_file([row])),('b.csv',self.csv_file([row]))])
+        self.assertEqual((len(records),duplicates),(2,0))
+        with self.assertRaisesRegex(ValueError,'invalido.csv'):
+            t.merge_uploads([('a.csv',self.csv_file([row])),('invalido.csv',b'coluna,outra\n1,2\n')])
+
+    def test_same_identifier_different_exam_is_preserved(self):
+        row=self.source_record()
+        records,_,duplicates,_=t.merge_uploads([
+            ('a.csv',self.csv_file([row])),
+            ('b.csv',self.csv_file([self.source_record(**{'Descrição do exame':'Outro exame'})])),
+        ])
+        self.assertEqual((len(records),duplicates),(2,0))
 
 if __name__=='__main__':
     unittest.main()

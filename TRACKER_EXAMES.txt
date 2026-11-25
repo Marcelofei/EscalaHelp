@@ -1,4 +1,4 @@
-Hospital HELP — Tracker de exames TC/RX
+Hospital HELP — Tracker de exames TC/RX/MMG
 
 INSTALAÇÃO
 Envie app.py, tracker_exames.py e requirements.txt para a mesma pasta do projeto.
@@ -11,15 +11,23 @@ USO
 Desbloqueie Administração/RH e abra Tracker de exames.
 Mantenha a escala de plantões preenchida para os dias de referência.
 Otávio é identificado pelo nome no cadastro ativo da equipe.
-Importe uma exportação completa de pendentes em ZIP, XLS, XLSX ou CSV.
-Confirme a substituição da lista anterior. Apenas TC e RX serão armazenados.
+Selecione uma ou mais exportações de pendentes em ZIP, XLS, XLSX ou CSV.
+Os arquivos selecionados serão unidos em uma única lista para confirmação.
+Um ZIP também pode conter várias planilhas, que serão todas validadas.
+Qualquer arquivo inválido impede a importação do conjunto, sem alterar a lista salva.
+Linhas idênticas entre arquivos, com ID/acesso e todos os dados iguais, são
+unificadas mantendo as origens. Linhas distintas com o mesmo ID/acesso,
+sem identificador e repetições dentro da mesma planilha são preservadas.
+A conferência mostra arquivos, planilhas, linhas aceitas/excluídas e repetições.
+Ao trocar os arquivos, a confirmação de substituição é desmarcada.
+Confirme a substituição da lista anterior. Apenas TC, RX e MMG serão armazenados.
 A lista importada persiste no PostgreSQL. A atribuição usa a escala de plantões.
 A antiga escala manual de laudos é preservada no banco, mas não é utilizada.
 A importação não altera a escala de plantões.
 Use Atualizar prazos e responsáveis para recalcular os tempos com a hora atual.
 O sistema não consulta automaticamente o RIS/PACS: exames concluídos deixam
 esta lista somente quando uma nova exportação completa é importada.
-Identificadores repetidos são preservados; as contagens são de linhas.
+As contagens são de linhas consolidadas; exames distintos com identificadores repetidos são preservados.
 Data e hora da realização e Prioridade determinam o prazo e o responsável.
 O convênio nunca substitui a prioridade.
 Casos sem escala, prioridade reconhecida ou horário válido ficam para conferir.
@@ -52,7 +60,7 @@ WHATSAPP
 Selecione o médico e informe o telefone com código do país e DDD.
 Confira a mensagem e abra o WhatsApp para enviar. Não há envio automático
 nem confirmação de entrega. A mensagem resume quantidades por prioridade,
-data de realização e modalidade (TC ou RX), sem nomes de pacientes ou acessos.
+data de realização e modalidade (TC, RX ou MMG), sem nomes de pacientes ou acessos.
 Seções: Pronto Atendimento, Urgente, Internos, Hosp Trauma e Eletivos.
 Oncologia e Sem prioridade são somadas em Eletivos apenas na mensagem;
 os prazos individuais de 4 e 5 dias continuam preservados no tracker.
@@ -70,3 +78,7 @@ VALIDAÇÃO
 Sintaxe verificada com py_compile e regras verificadas com testes isolados.
 A integração com o PostgreSQL e o envio pelo WhatsApp precisam ser conferidos
 no ambiente do hospital.
+
+MMG: aceita os códigos MG, MMG e MAMOGRAFIA, inclusive MG\OT.
+Os prazos e a atribuição por prioridade são os mesmos das demais modalidades.
+Para recuperar MMG excluída de importações antigas, reimporte as exportações.

@@ -1,4 +1,5 @@
-"""Tracker de TC/RX integrado ao banco e à escala do Hospital HELP."""
+"""Tracker de TC/RX/MMG integrado ao banco e à escala do Hospital HELP."""
+from collections import Counter
 import datetime as dt
 import io
 import json
@@ -36,9 +37,10 @@ def modality_group(value):
     tokens = set(re.split(r'[\\/;,\s]+', str(value).upper().strip()))
     ct = bool(tokens & {'CT', 'TC'})
     rx = bool(tokens & {'DX', 'CR', 'RX'})
-    if ct and rx:
-        return 'TC/RX — conferir'
-    return 'TC' if ct else 'RX' if rx else None
+    mmg = bool(tokens & {'MG', 'MMG', 'MAMOGRAFIA'})
+    if sum((ct, rx, mmg)) > 1:
+        return 'TC/RX/MMG — conferir'
+    return 'TC' if ct else 'RX' if rx else 'MMG' if mmg else None
 
 
 def assignment_slot(performed, kind):
@@ -85,15 +87,7 @@ def reporting_owner(performed, shifts, monday_doctor):
 
 def read_upload(filename, content):
     if filename.lower().endswith('.zip'):
-        with zipfile.ZipFile(io.BytesIO(content)) as archive:
-            files = [i for i in archive.infolist() if not i.is_dir()
-                     and not i.filename.startswith('__MACOSX/')
-                     and i.filename.lower().endswith(('.xls', '.xlsx', '.csv'))]
-            if len(files) != 1:
-                raise ValueError('O ZIP precisa conter exatamente uma planilha XLS, XLSX ou CSV.')
-            if files[0].file_size > 30_000_000:
-                raise ValueError('A planilha excede 30 MB descompactada.')
-            return read_upload(files[0].filename, archive.read(files[0]))
+        return pd.concat([frame for _,frame in read_upload_frames(filename, content)], ignore_index=True)
     if filename.lower().endswith('.csv'):
         try:
             return pd.read_csv(io.BytesIO(content), sep=None, engine='python', dtype=str)
@@ -101,6 +95,65 @@ def read_upload(filename, content):
             return pd.read_csv(io.BytesIO(content), sep=None, engine='python', dtype=str, encoding='latin1')
     return pd.read_excel(io.BytesIO(content), dtype=str,
                          engine='xlrd' if filename.lower().endswith('.xls') else 'openpyxl')
+
+
+def read_upload_frames(filename, content):
+    if not filename.lower().endswith('.zip'):
+        return [(filename, read_upload(filename, content))]
+    frames = []
+    with zipfile.ZipFile(io.BytesIO(content)) as archive:
+        files = [item for item in archive.infolist() if not item.is_dir()
+                 and not item.filename.startswith('__MACOSX/')
+                 and not item.filename.rsplit('/',1)[-1].startswith('._')
+                 and item.filename.lower().endswith(('.xls','.xlsx','.csv'))]
+        if not files:
+            raise ValueError('O ZIP não contém planilhas XLS, XLSX ou CSV.')
+        if any(item.file_size > 30_000_000 for item in files) or sum(item.file_size for item in files) > 100_000_000:
+            raise ValueError('Limite do ZIP: 30 MB por planilha e 100 MB no total descompactado.')
+        for item in files:
+            name = f'{filename} / {item.filename}'
+            try:
+                frames.append((name, read_upload(item.filename, archive.read(item))))
+            except Exception as exc:
+                raise ValueError(f'{name}: {exc}') from exc
+    return frames
+
+
+def merge_uploads(files):
+    """Valida todas as fontes antes da gravação e preserva a origem de cada linha."""
+    combined, excluded, duplicates, sheet_count = [], 0, 0, 0
+    matched = {}
+    for filename, content in files:
+        for source, frame in read_upload_frames(filename, content):
+            sheet_count += 1
+            try:
+                records, skipped = prepare_records(frame)
+            except Exception as exc:
+                raise ValueError(f'{source}: {exc}') from exc
+            excluded += skipped
+            occurrences = Counter()
+            for record in records:
+                origin = {'arquivo':source, 'linha':record['linha']}
+                record['origens'] = [origin]
+                key = tuple(record[field].strip() for field in
+                            ('id','acesso','paciente','exame','modalidade','prioridade','realizacao'))
+                # Só unifica linhas idênticas entre fontes que possuam ID/acesso.
+                # Repetições dentro da mesma fonte e exames distintos são preservados.
+                if key[0] or key[1]:
+                    occurrence = occurrences[key]
+                    occurrences[key] += 1
+                    prior = matched.setdefault(key, [])
+                    if occurrence < len(prior):
+                        prior[occurrence]['origens'].append(origin)
+                        duplicates += 1
+                        continue
+                    prior.append(record)
+                combined.append(record)
+    return combined, excluded, duplicates, sheet_count
+
+
+def reset_import_confirmation():
+    st.session_state['tracker_import_confirm'] = False
 
 
 def prepare_records(frame):
@@ -164,7 +217,7 @@ def build_tracker(records, shifts, monday_doctor=None, now=None):
             issues.append('Data/hora inválida ou incompleta')
         elif performed > now:
             issues.append('Realização no futuro')
-        if record['modalidade'] == 'TC/RX — conferir':
+        if record['modalidade'].endswith('— conferir'):
             issues.append('Modalidade ambígua')
         if rule and performed:
             if rule[2] == 'laudos':
@@ -198,6 +251,7 @@ def build_tracker(records, shifts, monday_doctor=None, now=None):
             'Situação': state, 'Prazo': time_label, 'Escala de referência': slot_label,
             'Conferência': '; '.join(issues), 'ID': record['id'],
             'Accession Nº': record['acesso'], 'Linha de origem': record['linha'],
+            'Arquivo(s) de origem': '; '.join(dict.fromkeys(origin['arquivo'] for origin in record.get('origens', []))),
             '_segundos': remaining if remaining is not None else float('inf'),
         })
     if not rows:
@@ -207,7 +261,7 @@ def build_tracker(records, shifts, monday_doctor=None, now=None):
 
 def build_whatsapp_message(recipient, exams, now):
     lines = [f'Bom dia Dr(a). {recipient},', '',
-             f'Essas são suas pendências de laudo TC/RX do Hospital HELP — atualização de {now:%d/%m/%Y %H:%M}.',
+             f'Essas são suas pendências de laudo TC/RX/MMG do Hospital HELP — atualização de {now:%d/%m/%Y %H:%M}.',
              'Segue a relação e detalhamento dos exames para liberação:']
     sections = {
         'PRONTO ATENDIMENTO (Prioridade)': {},
@@ -234,7 +288,7 @@ def build_whatsapp_message(recipient, exams, now):
         lines.extend(['', title])
         if not counts:
             lines.append('Sem pendências.')
-        for (day, modality), count in sorted(counts.items(), key=lambda item: (item[0][0], {'TC':0, 'RX':1}[item[0][1]])):
+        for (day, modality), count in sorted(counts.items(), key=lambda item: (item[0][0], {'TC':0, 'RX':1, 'MMG':2}[item[0][1]])):
             lines.append(f'{day:%d/%m} - {modality} - {count:02d}')
     return '\n'.join(lines)
 
@@ -251,7 +305,7 @@ def render_tracker(fetch_data, execute_query, fetch_doctors):
         st.error('Desbloqueie a administração para acessar o tracker.')
         return
     ensure_tables(execute_query)
-    st.header('⏱️ Tracker de exames · TC e RX')
+    st.header('⏱️ Tracker de exames · TC, RX e MMG')
     st.caption('Prazos desde a realização · horário de Fortaleza · classificação pela coluna Prioridade.')
     with st.expander('Regras de prazo e responsabilidade'):
         st.table(pd.DataFrame([
@@ -283,21 +337,23 @@ def render_tracker(fetch_data, execute_query, fetch_doctors):
     if not monday_doctor:
         st.warning('Identifique Otávio no cadastro ativo da equipe. Os eletivos de segunda ficarão para conferir até essa identificação.')
     with st.expander('📥 Importar lista de exames pendentes', expanded=True):
-        upload = st.file_uploader('Exportação completa dos pendentes', type=['zip','xls','xlsx','csv'], key='tracker_upload')
-        st.caption('Cada importação substitui a lista anterior de TC/RX. A ausência de um exame na nova lista não comprova que foi laudado.')
-        if upload:
+        uploads = st.file_uploader('Selecione uma ou mais exportações dos pendentes', type=['zip','xls','xlsx','csv'],
+                                   accept_multiple_files=True, key='tracker_uploads', on_change=reset_import_confirmation)
+        st.caption('Os arquivos selecionados serão unidos. Cada importação substitui a lista anterior de TC/RX/MMG. A ausência de um exame na nova lista não comprova que foi laudado.')
+        if uploads:
             try:
-                records, excluded = prepare_records(read_upload(upload.name, upload.getvalue()))
+                records, excluded, duplicates, sheet_count = merge_uploads([(upload.name, upload.getvalue()) for upload in uploads])
             except Exception as exc:
                 st.error(f'Não foi possível ler a exportação: {exc}')
                 return
-            st.write(f'{len(records)} linhas de TC/RX · {excluded} linhas de outras modalidades excluídas.')
+            st.write(f'{len(uploads)} arquivo(s) · {sheet_count} planilha(s) · {len(records)} linhas de TC/RX/MMG · {excluded} linhas de outras modalidades excluídas.')
+            st.caption(f'{duplicates} repetição(ões) idêntica(s) entre arquivos unificada(s) por ID/acesso e dados completos. Repetições dentro da mesma planilha são preservadas.')
             consent = st.checkbox('Confirmo que esta é a lista completa de exames pendentes para substituir a anterior.', key='tracker_import_confirm')
             if st.button('Confirmar importação', disabled=not consent or not records, key='tracker_import'):
                 execute_query('''INSERT INTO exam_tracker_snapshot(id,payload,source_name,imported_at)
                     VALUES(1,%s,%s,NOW()) ON CONFLICT(id) DO UPDATE
                     SET payload=EXCLUDED.payload,source_name=EXCLUDED.source_name,imported_at=NOW()''',
-                              (json.dumps(records, ensure_ascii=False), upload.name))
+                              (json.dumps(records, ensure_ascii=False), '; '.join(upload.name for upload in uploads)))
                 st.success('Lista importada e salva no banco.')
     snapshot = fetch_data('SELECT payload,source_name,imported_at FROM exam_tracker_snapshot WHERE id=1')
     if snapshot.empty:
@@ -322,11 +378,11 @@ def render_tracker(fetch_data, execute_query, fetch_doctors):
     now = dt.datetime.now(TZ)
     result = build_tracker(records, shifts, monday_doctor, now)
     if result.empty:
-        st.info('A lista não contém exames de TC/RX.')
+        st.info('A lista não contém exames de TC/RX/MMG.')
         return
-    st.caption(f'Prazos calculados em {now:%d/%m/%Y %H:%M:%S}. Contagens por linha da exportação; identificadores repetidos são preservados.')
+    st.caption(f'Prazos calculados em {now:%d/%m/%Y %H:%M:%S}. Contagens por linha consolidada; exames distintos com identificadores repetidos são preservados.')
     a,b,c,d = st.columns(4)
-    a.metric('Linhas de TC/RX', len(result))
+    a.metric('Linhas de TC/RX/MMG', len(result))
     b.metric('Atrasados atribuídos', int((result['Situação']=='Atrasado').sum()))
     c.metric('No prazo atribuídos', int((result['Situação']=='No prazo').sum()))
     d.metric('Para conferir', int((result['Situação']=='Conferir').sum()))
